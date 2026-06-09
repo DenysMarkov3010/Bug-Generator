@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bug Report Agent</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark">🐛</div>
+      <div class="logo-name">bug-report-agent</div>
+      <div class="logo-ver">v1.0</div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" id="nav-report"   onclick="showPage('report')">📝 &nbsp;Report</button>
+      <button class="nav-item"        id="nav-template" onclick="showPage('template')">📋 &nbsp;Template</button>
+      <button class="nav-item"        id="nav-setup"    onclick="showPage('setup')"> ⚙️ &nbsp;Setup</button>
+      <button class="nav-item"        id="nav-history"  onclick="showPage('history')">🕓 &nbsp;History</button>
+      <button class="nav-item"        id="nav-context"  onclick="showPage('context')">🔤 &nbsp;Context words</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div style="font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px">Provider</div>
+      <div style="display:flex;gap:4px;margin-bottom:8px">
+        <button class="lang-btn active" id="pAnthropic" onclick="setProvider('anthropic')" style="flex:1;border-radius:var(--r-sm)">Anthropic</button>
+        <button class="lang-btn"        id="pOpenRouter" onclick="setProvider('openrouter')" style="flex:1;border-radius:var(--r-sm)">OpenRouter</button>
+      </div>
+      <button class="api-btn" id="apiBtn" onclick="promptKey()">
+        <span id="apiIcon">○</span><span id="apiLbl">Set API key</span>
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- REPORT -->
+    <div class="page active" id="page-report">
+      <div class="page-title">New bug report</div>
+      <div class="page-sub" id="projSub">Describe the bug — voice or text — get a Jira-ready report.</div>
+
+      <div class="sub-tabs">
+        <button class="sub-tab active" id="sub-single" onclick="showReportSubTab('single')">📝 Single Report</button>
+        <button class="sub-tab"        id="sub-batch"  onclick="showReportSubTab('batch')">🗂 Batch Report</button>
+      </div>
+
+      <div class="report-sub active" id="report-single">
+
+      <div class="voice-area" id="voiceArea">
+        <button class="mic-btn" id="micBtn" onclick="toggleRec()">🎙</button>
+        <div class="voice-info">
+          <div class="v-status" id="vSt">Tap to dictate</div>
+          <div class="v-hint"   id="vHt">Ukrainian or English — report will always be in English</div>
+        </div>
+        <div class="lang-toggle">
+          <button class="lang-btn active" id="lUk" onclick="setLang('uk-UA')">УК</button>
+          <button class="lang-btn"        id="lEn" onclick="setLang('en-US')">EN</button>
+        </div>
+      </div>
+
+      <div class="ex-card" id="voiceExamples" style="display:none">
+        <div class="ex-head">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="ex-lbl">✨ Example dictation</span>
+            <span style="font-size:10px;color:var(--dim);font-family:'IBM Plex Mono',monospace">from your template</span>
+          </div>
+          <div class="lang-toggle">
+            <button class="lang-btn active" id="exUk" onclick="showVoiceExample('uk')">УК</button>
+            <button class="lang-btn"        id="exEn" onclick="showVoiceExample('en')">EN</button>
+          </div>
+        </div>
+        <div class="ex-body" id="exText"></div>
+        <div class="ex-actions">
+          <button class="btn btn-ghost btn-sm" onclick="useExample()">↓ Use as input</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="lbl" for="tin">Or type / paste description</label>
+        <textarea id="tin" rows="5" placeholder="Raw notes, user complaint, test steps…"></textarea>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
+        <span style="font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--dim);text-transform:uppercase;letter-spacing:.07em">Format</span>
+        <div class="lang-toggle" style="background:var(--surface2)">
+          <button class="lang-btn active" id="fmtNormal"  onclick="setReportFormat('normal')">Normal</button>
+          <button class="lang-btn"        id="fmtGherkin" onclick="setReportFormat('gherkin')">Gherkin</button>
+        </div>
+        <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">Normal = steps+ER/AR · Gherkin = GIVEN/WHEN/THEN</span>
+      </div>
+
+      <button class="btn btn-accent" id="genBtn" onclick="generate()" style="width:100%;justify-content:center;padding:11px;">
+        → Generate bug report
+      </button>
+      <div id="errArea"></div>
+      <div id="resArea"></div>
+
+      </div><!-- /#report-single -->
+
+      <div class="report-sub" id="report-batch">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.8rem;flex-wrap:wrap">
+          <div style="flex:1;min-width:240px;font-size:13px;color:var(--muted)">Add bug cards, dictate each one, then generate all at once.</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div class="lang-toggle" style="background:var(--surface2)">
+              <button class="lang-btn active" id="sFmtNormal"  onclick="setSessionFormat('normal')">Normal</button>
+              <button class="lang-btn"        id="sFmtGherkin" onclick="setSessionFormat('gherkin')">Gherkin</button>
+            </div>
+            <div class="lang-toggle">
+              <button class="lang-btn active" id="sLangUk" onclick="setSessionLang('uk-UA')">УК</button>
+              <button class="lang-btn"        id="sLangEn" onclick="setSessionLang('en-US')">EN</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="bugCards"></div>
+
+        <button class="btn btn-ghost" onclick="addBugCard()" style="width:100%;justify-content:center;margin-bottom:1rem;border-style:dashed">
+          + Add bug
+        </button>
+
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-accent" id="sGenBtn" onclick="generateSession()" style="flex:1;justify-content:center;padding:11px">
+            → Generate all reports
+          </button>
+          <button class="btn btn-ghost" onclick="clearSession()" style="padding:11px 14px" title="Remove all cards">🗑</button>
+        </div>
+
+        <div id="sErrArea"></div>
+        <div id="sResArea"></div>
+      </div><!-- /#report-batch -->
+    </div>
+
+    <!-- HISTORY -->
+    <div class="page" id="page-history">
+      <div class="page-title">Bug history</div>
+      <div class="page-sub">Last 20 generated reports — stored locally in your browser.</div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:1rem">
+        <button class="btn btn-ghost btn-sm" onclick="clearHistory()">🗑 Clear all</button>
+      </div>
+      <div id="historyList"></div>
+    </div>
+
+    <!-- SETUP -->
+    <div class="page" id="page-setup">
+      <div class="page-title">Project setup</div>
+      <div class="page-sub">Configure once — saved in your browser. Export JSON to share with the team.</div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Project &amp; Jira connection</span></div>
+        <div class="card-body">
+          <div class="g3">
+            <div class="field"><label class="lbl">Project name</label><input type="text" id="sName" placeholder="My App"/></div>
+            <div class="field"><label class="lbl">Jira project key</label><input type="text" id="sKey" placeholder="QA"/></div>
+            <div class="field"><label class="lbl">Default issue type</label>
+              <select id="sType"><option>Bug</option><option>Task</option><option>Story</option></select></div>
+          </div>
+          <div class="g2">
+            <div class="field"><label class="lbl">Jira base URL</label><input type="url" id="sUrl" placeholder="https://company.atlassian.net"/></div>
+            <div class="field"><label class="lbl">Jira email</label><input type="text" id="sEmail" placeholder="you@company.com"/></div>
+          </div>
+          <div class="field"><label class="lbl">Jira API token <span style="color:var(--dim)">(stored locally, not exported)</span></label>
+            <input type="password" id="sToken" placeholder="Your Jira API token"/></div>
+          <div class="field"><label class="lbl">Proxy URL <span style="color:var(--dim)">(required for Jira Cloud — bypasses CORS)</span></label>
+            <input type="url" id="sProxy" placeholder="https://your-app.vercel.app/api/jira"/></div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <button class="btn btn-ghost btn-sm" id="testJiraBtn" onclick="testJiraConnection()">🔌 Test connection</button>
+            <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">calls /myself via your proxy</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">AI rules</span>
+          <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">Claude follows these · Analyze Template REPLACES this list</span>
+        </div>
+        <div class="card-body">
+          <div class="rules-list" id="rulesList"></div>
+          <div class="add-row">
+            <input type="text" id="newRule" placeholder="e.g. Always mention the test environment version" onkeydown="if(event.key==='Enter')addRule()"/>
+            <button class="btn btn-ghost btn-sm" onclick="addRule()">+ Add</button>
+          </div>
+          <div id="restoreRulesRow" style="display:none;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)">
+            <button class="btn btn-ghost btn-sm" onclick="restorePreviousRules()" title="Bring back the rules saved before the last Analyze Template run">↶ Restore previous rules</button>
+            <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace;margin-left:6px"><span id="restoreRulesCount">0</span> rules · from last Analyze Template</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Custom Jira fields</span>
+          <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">project-specific · 📌 to protect from re-analysis</span>
+        </div>
+        <div class="card-body">
+          <div class="fields-list" id="fieldsList"></div>
+          <div id="restoreFieldsRow" style="display:none;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)">
+            <button class="btn btn-ghost btn-sm" onclick="restorePreviousFields()" title="Bring back the custom fields saved before the last Analyze Template run">↶ Restore previous fields</button>
+            <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace;margin-left:6px"><span id="restoreFieldsCount">0</span> fields · from last Analyze Template</span>
+          </div>
+          <div class="af-grid">
+            <div><div class="lbl">Field name</div><input type="text" id="nfName" placeholder="Test environment"/></div>
+            <div><div class="lbl">Type</div><select id="nfType"><option value="text">text</option><option value="list">list</option><option value="number">number</option></select></div>
+            <div><div class="lbl">Jira field ID</div><input type="text" id="nfId" placeholder="customfield_10xx"/></div>
+            <div><div class="lbl">Default <span style="color:var(--dim)">(optional)</span></div><input type="text" id="nfDef" placeholder="used when AI can't infer"/></div>
+            <div><div class="lbl">Required</div><select id="nfReq"><option value="no">No</option><option value="yes">Yes</option></select></div>
+            <button class="btn btn-ghost btn-sm" style="align-self:flex-end" onclick="addField()">+</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;border-top:0.5px solid var(--border);flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm" onmousedown="event.preventDefault()" onclick="openFieldsBrowser()" title="Browse all Jira fields and insert their IDs">🔎 Browse Jira fields</button>
+          </div>
+
+          <div style="border-top:0.5px solid var(--border);margin:18px 0 14px"></div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Default Environment</span>
+            <span id="envStatus" style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)">not set</span>
+          </div>
+          <div class="field">
+            <label class="lbl" for="sDefEnv">Reused verbatim in every report — no AI rewrite</label>
+            <textarea id="sDefEnv" rows="8" placeholder="Auto-filled from your template after Analyze Template. Or paste device / OS / build info here." style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55" oninput="renderDefaultEnvStatus()"></textarea>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+            <button class="btn btn-ghost btn-sm" onclick="clearDefaultEnvironment()">🗑 Clear</button>
+            <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">Click 💾 Save below to persist edits</span>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px;padding-top:12px;border-top:0.5px solid var(--border);flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm" id="analyzeBtn" onclick="analyzeTemplate()">🔍 Analyze Template</button>
+            <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">Auto-extract rules, fields, environment & voice examples from your saved Template</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-accent" onclick="saveCfg()">💾 Save</button>
+        <button class="btn btn-ghost"  onclick="exportCfg()">↗ Export JSON</button>
+        <label  class="btn btn-ghost"  style="cursor:pointer">↙ Import JSON
+          <input type="file" accept=".json" style="display:none" onchange="importCfg(event)"/></label>
+      </div>
+    </div>
+
+    <!-- TEMPLATE -->
+    <div class="page" id="page-template">
+      <div class="page-title">Bug template</div>
+      <div class="page-sub">Upload or paste an existing bug report. The AI uses it as a style reference to auto-extract project rules.</div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Reference bug</span>
+          <span id="tplStatus" style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)">No template saved yet</span>
+        </div>
+        <div class="card-body">
+          <div class="field">
+            <label class="lbl">Fetch from Jira link <span style="color:var(--dim)">(uses your Jira creds + proxy)</span></label>
+            <div style="display:flex;gap:6px;align-items:stretch">
+              <input type="url" id="tplLink" placeholder="https://your-company.atlassian.net/browse/QA-1234" style="flex:1"/>
+              <button class="btn btn-ghost btn-sm" id="fetchTplBtn" onclick="fetchTemplateFromLink()" style="white-space:nowrap">🔗 Fetch</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="lbl">Upload from file</label>
+            <label class="btn btn-ghost btn-sm" style="cursor:pointer;display:inline-flex">
+              📁 Choose file (.txt, .md, .json, .csv, .log, .xlsx, .xls)
+              <input type="file" accept=".txt,.md,.json,.csv,.log,.xlsx,.xls" style="display:none" onchange="loadTemplateFile(event)"/>
+            </label>
+          </div>
+          <div class="field">
+            <label class="lbl" for="tplText">Or paste a bug report here</label>
+            <textarea id="tplText" rows="16" placeholder="Paste a previously-written bug report (any format — Jira ticket, plain text, markdown, JSON export)…"></textarea>
+          </div>
+          <div class="btn-row" style="margin-top:0">
+            <button class="btn btn-accent" onclick="saveTemplate()">💾 Save Template</button>
+            <button class="btn btn-ghost"  onclick="clearTemplate()">🗑 Clear</button>
+            <button class="btn btn-ghost"  onclick="showPage('setup')">→ Go to Setup</button>
+          </div>
+          <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--r-sm);font-size:12px;color:var(--muted);line-height:1.6">
+            <strong style="color:var(--text);font-weight:500">How it works:</strong>
+            paste / fetch a bug → Save Template → go to <strong style="color:var(--text);font-weight:500">Setup</strong> → in the <em>Custom Jira fields</em> card click
+            <strong style="color:var(--accent);font-weight:500">🔍 Analyze Template</strong>.
+            The AI extracts AI rules, custom fields and voice examples in one pass.
+            From then on, every report on the <strong style="color:var(--text);font-weight:500">Report</strong> page follows the same style.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTEXT WORDS -->
+    <div class="page" id="page-context">
+      <div class="page-head">
+        <h1 class="page-title">Context words</h1>
+        <p class="page-sub">A glossary of unique terms (product names, features, jargon). During <strong>Browser</strong> dictation, recognized words that sound ≈ a glossary entry are auto-corrected to the exact spelling — so the recognizer invents less.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Dictionary</span>
+          <span id="ctxCount" style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">0 words</span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6;margin-bottom:12px">
+            <strong style="color:var(--muted)">Term</strong> = exact spelling inserted into the report (e.g. <code>Follistim</code>, <code>New Leaf</code>).<br>
+            <strong style="color:var(--muted)">Sounds like</strong> = comma-separated variants the recognizer might output, incl. how it sounds in Ukrainian (e.g. <code>фоллістім, фолістім</code>). Used for matching only.<br>
+            Click <strong style="color:var(--accent)">🔍 Analyze Template</strong> to auto-extract terms (the AI also fills the Ukrainian variants).
+          </div>
+          <div id="ctxList"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button class="btn btn-ghost btn-sm" onclick="addContextWord()">+ Add word</button>
+            <button class="btn btn-ghost btn-sm" id="ctxRestoreBtn" onclick="restorePreviousContextWords()" style="display:none">↶ Restore previous (<span id="ctxRestoreCount">0</span>)</button>
+            <button class="btn btn-ghost btn-sm" onclick="clearContextWords()">🗑 Clear all</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Matching</span>
+        </div>
+        <div class="card-body">
+          <div class="field">
+            <label class="lbl" for="ctxThreshold">Similarity threshold — <span id="ctxThresholdVal">85</span>%</label>
+            <input type="range" id="ctxThreshold" min="70" max="98" step="1" value="85" oninput="setContextThreshold(this.value)" style="width:100%;max-width:360px"/>
+            <div style="margin-top:6px;font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.5">
+              Higher = stricter (fewer corrections, fewer false hits). Lower = more aggressive matching. 85% is a good default.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- First-time-on-localhost install banner (Windows only). Hidden by default. -->
+<div class="install-banner" id="installBanner" style="display:none" role="dialog" aria-label="Install to Desktop">
+  <div class="install-banner-head">
+    <div class="install-banner-title">💡 One-click launcher?</div>
+    <button class="install-banner-close" onclick="dismissInstallBanner()" aria-label="Close">×</button>
+  </div>
+  <div class="install-banner-body">
+    Double-click <strong>install.bat</strong> in the project folder once.
+    It creates a Desktop shortcut that launches <strong>start.bat</strong> —
+    starts the local server and opens this page in one click. No more manual
+    <code style="font-family:'IBM Plex Mono',monospace;font-size:11px">serve.bat</code>.
+  </div>
+  <div class="install-banner-actions">
+    <button class="btn btn-ghost btn-sm" onclick="dismissInstallBanner()">Don't show again</button>
+  </div>
+</div>
+
+<!-- Jira fields browser (opened by "🔎 Browse Jira fields" in Setup) -->
+<div class="fb-overlay" id="fieldsBrowserOverlay" onclick="if(event.target===this)closeFieldsBrowser()" role="dialog" aria-label="Browse Jira fields">
+  <div class="fb-modal">
+    <div class="fb-head">
+      <div class="fb-title">Browse Jira fields</div>
+      <button class="fb-close" onclick="closeFieldsBrowser()" aria-label="Close">×</button>
+    </div>
+    <div class="fb-body">
+      <input type="text" id="fbSearch" placeholder="Search by name or ID…" oninput="renderFieldsBrowser(this.value)"/>
+      <div class="fb-status" id="fbStatus"></div>
+      <div class="fb-list" id="fbList"></div>
+    </div>
+    <div class="fb-foot">
+      <span id="fbTargetHint">Click a row to copy its ID to clipboard</span>
+      <span>Esc to close</span>
+    </div>
+  </div>
+</div>
+
+<!-- SheetJS (xlsx parser) for the Template page. Loaded from CDN. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<!-- Scripts are loaded in dependency order. Each file adds functions to the
+     global scope, so existing onclick="..." handlers keep working. -->
+<script src="js/state.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/config.js"></script>
+<script src="js/voice.js?v=ctxwords"></script>
+<script src="js/template.js"></script>
+<script src="js/editable.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/jira.js"></script>
+<script src="js/history.js"></script>
+<script src="js/session.js"></script>
+<script src="js/context.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
