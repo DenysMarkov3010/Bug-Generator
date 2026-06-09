@@ -294,6 +294,22 @@ The Windows installer:
 >
 > After that, double-click `install-mac.command` normally.
 
+> **Got `The file "install-mac.command" could not be executed because you do not have appropriate access privileges`?**
+> The script likely does not have execute permission. Open Terminal, `cd`
+> into this folder and run:
+>
+> ```bash
+> chmod +x install-mac.command
+> ```
+>
+> If macOS still blocks the file after that, remove quarantine too:
+>
+> ```bash
+> xattr -d com.apple.quarantine install-mac.command
+> ```
+>
+> Then double-click `install-mac.command` again.
+
 The macOS installer:
 - builds a proper `.app` bundle (`Bug Report Agent.app/Contents/...`)
 - auto-generates `AppIcon.icns` from `favicon.svg` if `qlmanage` + `sips`
