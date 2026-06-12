@@ -21,9 +21,14 @@
 # unless they have a UTF-8 BOM, so any em-dash / smart-quote here would
 # arrive as mojibake on non-Western locales (CP1251 etc.).
 
+# Port is overridable (serve.ps1 -Port 8080) for cases where 8765 is taken
+# or lands in a Windows excluded-port range. Default stays 8765 so the
+# desktop shortcut / serve.bat keep working unchanged.
+param([int]$Port = 8765)
+
 $ErrorActionPreference = 'Stop'
 
-$port = 8765
+$port = $Port
 $root = $PSScriptRoot
 
 # Mime map - keep it small but cover everything index.html actually loads

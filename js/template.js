@@ -237,8 +237,36 @@ function isSprintValue(v) {
 function formatSprintValue(arr) {
   return arr.map(s => {
     const name = s.name || `Sprint ${s.id}`;
-    return `${name} [id: ${s.id}]`;
+    const state = String(s.state || 'unknown').toLowerCase();
+    return `${name} [id: ${s.id}, state: ${state}]`;
   }).join(', ');
+}
+
+// Pull the structured sprint out of a fetched issue so analyzeTemplate can
+// inject a GUARANTEED-valid numeric id into the Sprint custom field —
+// deterministic code instead of trusting the AI to copy the id from text.
+// An issue often carries its whole sprint history (closed sprints first),
+// so prefer the ACTIVE sprint, then a FUTURE one, then the most recent.
+function captureTemplateSprint(issue) {
+  const f = issue.fields || {};
+  let captured = null;
+  Object.keys(f).forEach(k => {
+    if (!k.startsWith('customfield_')) return;
+    if (!isSprintValue(f[k])) return;
+    const arr  = f[k];
+    const pick = arr.find(s => String(s.state).toLowerCase() === 'active')
+              || arr.find(s => String(s.state).toLowerCase() === 'future')
+              || arr[arr.length - 1];
+    if (pick && pick.id != null) {
+      captured = {
+        id:      pick.id,
+        name:    pick.name || '',
+        state:   String(pick.state || 'unknown').toLowerCase(),
+        fieldId: k,
+      };
+    }
+  });
+  return captured;
 }
 
 // Flatten the various shapes a Jira value can take into a single string.
@@ -285,6 +313,28 @@ function formatIssueAsText(issue) {
   }
   if (f.environment)        lines.push(`Environment: ${jiraValueToText(f.environment)}`);
   if (f.duedate)            lines.push(`Due Date: ${f.duedate}`);
+
+  // Linked issues — one line per link, phrased from THIS issue's perspective
+  // ("relates to FER-123 — Checkout redesign (https://…)"), exactly the
+  // shape analyzeTemplate's linkedWorkItems extraction expects. Jira returns
+  // each link with either inwardIssue or outwardIssue relative to the
+  // current issue; the matching type.inward / type.outward phrase describes
+  // the relation in that direction.
+  if (Array.isArray(f.issuelinks) && f.issuelinks.length) {
+    const base = (cfg.jiraUrl || '').trim().replace(/\/+$/, '');
+    const linkLines = f.issuelinks.map(l => {
+      const other  = l.outwardIssue || l.inwardIssue;
+      if (!other || !other.key) return '';
+      const phrase = l.outwardIssue ? (l.type && l.type.outward) : (l.type && l.type.inward);
+      const title  = other.fields && other.fields.summary ? ` — ${other.fields.summary}` : '';
+      const url    = base ? ` (${base}/browse/${other.key})` : '';
+      return `- ${phrase || 'relates to'} ${other.key}${title}${url}`;
+    }).filter(Boolean);
+    if (linkLines.length) {
+      lines.push('Linked Issues:');
+      lines.push(...linkLines);
+    }
+  }
 
   // Custom fields: include any non-empty `customfield_*` so analyzeTemplate
   // can detect them. Use the `names` block if present (returned when
@@ -351,7 +401,14 @@ async function fetchTemplateFromLink() {
     document.getElementById('tplText').value = text;
     cfg.templateLink = link;
 
-    toast(`✓ Loaded ${key} — click Save Template`);
+    // Stash the structured sprint (persisted with the rest of cfg on Save
+    // Template) so Analyze Template can set a valid numeric Sprint default.
+    cfg.templateSprint = captureTemplateSprint(issue);
+
+    const sprintNote = cfg.templateSprint
+      ? ` · Sprint id ${cfg.templateSprint.id}${cfg.templateSprint.state !== 'active' ? ` (⚠ ${cfg.templateSprint.state})` : ''}`
+      : '';
+    toast(`✓ Loaded ${key}${sprintNote} — click Save Template`);
   } catch (e) {
     toast('⚠ Fetch failed: ' + e.message);
   } finally {
@@ -415,6 +472,7 @@ function clearTemplate() {
   document.getElementById('tplText').value = '';
   const linkEl = document.getElementById('tplLink');
   if (linkEl) linkEl.value = '';
+  cfg.templateSprint = null;   // sprint belongs to the cleared template
   saveTemplate();
 }
 
@@ -519,7 +577,7 @@ Given the bug report below, reverse-engineer the project's report format and con
    - "defaultValue": the VALUE of this field in the template, as a plain string. Rules per field type:
        * Multi-value list fields → comma-separate (e.g. "Frontend, API")
        * Assignee / Reporter → use ONLY the accountId from the brackets (e.g. "557057:abc-def" from "Andrii Mysliuk [557057:abc-def]"), NEVER the display name
-       * Sprint fields → use ONLY the numeric ID from the brackets (e.g. "5678" from "Sprint 110 [id: 5678]"), NEVER the sprint name or sprint number-as-name
+       * Sprint fields → use ONLY the numeric ID from the brackets (e.g. "5678" from "Sprint 110 [id: 5678, state: active]"), NEVER the sprint name or sprint number-as-name
        * Long multi-line values (e.g. a multi-device "Environment" listing) → keep a single-line representative summary
        * Empty string ("") if you cannot reliably extract
 
@@ -547,7 +605,14 @@ Given the bug report below, reverse-engineer the project's report format and con
    - Refer to UI elements and features by their actual names (e.g. "the Pay button", "the date picker"), NOT by dismissive nouns ("ця штука", "ця фігня" / "this thing", "this stuff").
    - Stay matter-of-fact about what is broken — describe behavior, do not vent about it.
 
-6. Extract CONTEXT WORDS — a glossary of UNIQUE / distinctive terms a tester would speak when dictating bugs for this project. These are used to auto-correct speech-to-text. STRICT SOURCE rule:
+6. Extract LINKED WORK ITEMS — tickets this bug is linked to. Look for a "Linked Issues" / "Linked work items" / "Issue Links" section, relation phrases ("relates to", "blocks", "is blocked by", "duplicates", "is caused by", "clones"…), and inline ticket references / URLs (https://…/browse/KEY-123). For each linked ticket return:
+   - "relation": how THIS bug relates to that ticket — exactly one of: "relates to", "blocks", "is blocked by", "duplicates", "is duplicated by", "causes", "is caused by", "clones", "is cloned by". Pick the closest match; use "relates to" when unclear.
+   - "key": the issue key (e.g. "FER-123"). Empty string if only a URL with no visible key.
+   - "title": the linked ticket's summary/title if shown, else "".
+   - "url": the full URL if shown, else "".
+   Do NOT include the bug's own key, sub-tasks, or the parent epic. Return [] if the template shows no linked tickets.
+
+7. Extract CONTEXT WORDS — a glossary of UNIQUE / distinctive terms a tester would speak when dictating bugs for this project. These are used to auto-correct speech-to-text. STRICT SOURCE rule:
    - Look ONLY inside the DESCRIPTION section — specifically the STEPS (numbered steps / "Step Action" / "Step Expected") and the PRECONDITIONS text. Ignore every other section (Summary, field labels, Environment, metadata, Assignee, etc.) when picking terms.
    - From that Steps + Preconditions text, pull the MOST distinctive terms: product names, feature names, module / screen / page names, button & control names, brand or drug names, acronyms, camelCase identifiers, hyphenated terms, and other domain-specific jargon (e.g. "OTB Calendar", "Batch Add", "Follistim", "Group event", "Backoffice").
    - SKIP generic English/QA words ("button", "page", "error", "login", "save", "user", "click", "screen", "open", "select").
@@ -574,6 +639,9 @@ Respond ONLY with valid JSON, no markdown fences:
     { "name": "Affected Browser",   "system": false, "type": "list", "defaultValue": "Chrome" }
   ],
   "templateEnvironment": "Device: iPhone 13\nDisplay: 6.1 (2532x1170)\nApp_version: 3.41.0 (399) QA\niOS_version: 26.2\nNetwork connection: Wi-fi\n\nDevice: Samsung Galaxy M33 5G\nDisplay: 6.6 (1080 x 2400)\nApp_version: 3.41.0 (451) QA\nAndroid_version: 16\nNetwork connection: Wi-fi",
+  "linkedWorkItems": [
+    { "relation": "relates to", "key": "FER-123", "title": "Checkout redesign", "url": "https://company.atlassian.net/browse/FER-123" }
+  ],
   "voiceExamples": {
     "uk": "Так от, я зайшов на сторінку оплати, ввів дані картки, але кнопка Pay не реагує на клік. Здається, що форма не валідується — помилка теж не показується. Перевіряв у Chrome на Windows.",
     "en": "So I went to the checkout page, entered my card details, but the Pay button doesn't respond when I click it. Looks like the form isn't validating — no error shows up either. I tested in Chrome on Windows."
@@ -593,7 +661,7 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
         body: JSON.stringify({
-          model: 'openrouter/auto',
+          model: cfg.openRouterModel || 'openrouter/auto',
           max_tokens: 2300,
           messages: [{ role: 'system', content: sys }, { role: 'user', content: tpl }],
         }),
@@ -604,7 +672,12 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
     } else {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 2300,
@@ -617,11 +690,13 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
       txt = data.content.map(i => i.text || '').join('');
     }
 
-    const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+    const parsed = typeof parseAiJson === 'function'
+      ? parseAiJson(txt)
+      : JSON.parse(txt.replace(/```json|```/g, '').trim());
 
     // Accept either the new object shape {rules, voiceExamples, detectedFields, templateEnvironment}
     // or a plain array (legacy single-purpose responses).
-    let arr, examples, detected, tplEnv, ctxWords, reportTpl;
+    let arr, examples, detected, tplEnv, ctxWords, reportTpl, linkedItems;
     if (Array.isArray(parsed)) {
       arr = parsed;
       examples = null;
@@ -629,6 +704,7 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
       tplEnv   = '';
       ctxWords = [];
       reportTpl = null;
+      linkedItems = [];
     } else if (parsed && typeof parsed === 'object') {
       arr      = Array.isArray(parsed.rules)          ? parsed.rules          : [];
       examples = parsed.voiceExamples || null;
@@ -636,6 +712,7 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
       tplEnv   = typeof parsed.templateEnvironment === 'string' ? parsed.templateEnvironment : '';
       ctxWords = Array.isArray(parsed.contextWords)   ? parsed.contextWords   : [];
       reportTpl = parsed.reportTemplate && typeof parsed.reportTemplate === 'object' ? parsed.reportTemplate : null;
+      linkedItems = Array.isArray(parsed.linkedWorkItems) ? parsed.linkedWorkItems : [];
     } else {
       throw new Error('Unexpected AI response shape');
     }
@@ -775,6 +852,56 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
       localStorage.setItem('bra_fields_backup', JSON.stringify(previousFields));
     }
 
+    // ── deterministic Sprint default ─────────────────────────────────────
+    // The AI sometimes copies the sprint NAME ("Sprint 110") or mangles the
+    // id, which Jira then rejects on push. fetchTemplateFromLink captured
+    // the structured sprint straight from the issue (cfg.templateSprint) —
+    // force that guaranteed-valid numeric id into the Sprint row, creating
+    // the row if the AI missed it. Guarded by a template-text check so a
+    // stale sprint from a previously fetched issue can't leak into a
+    // template that was later pasted manually. Pinned rows stay untouched.
+    let sprintForced = null;
+    const tplSprint = cfg.templateSprint;
+    if (tplSprint && tplSprint.id != null &&
+        (cfg.template || '').includes(`id: ${tplSprint.id}`)) {
+      const isSprintRow = f => /sprint/i.test(f.name || '') || /sprint/i.test(f.jiraId || '') ||
+                               (tplSprint.fieldId && f.jiraId === tplSprint.fieldId);
+      let row = cfg.customFields.find(isSprintRow);
+      if (!row) {
+        row = { name: 'Sprint', type: 'number', jiraId: tplSprint.fieldId || '', required: 'no', default: '' };
+        cfg.customFields.push(row);
+      }
+      if (!row.pinned) {
+        row.default = String(tplSprint.id);
+        // The structured fieldId from the issue beats any name-based guess.
+        if (tplSprint.fieldId) row.jiraId = tplSprint.fieldId;
+        sprintForced = tplSprint;
+      }
+    }
+
+    // Linked work items: ADDITIVE merge, de-duplicated by issue key. The
+    // template's links become project defaults shown in Setup → Linked work
+    // items; a key the user already curated keeps its row (we only backfill
+    // a missing title/url), so re-running Analyze never stomps manual edits.
+    let linkedAdded = 0;
+    const linkedClean = normalizeLinkedWorkItems(linkedItems);
+    if (linkedClean.length) {
+      if (!Array.isArray(cfg.linkedWorkItems)) cfg.linkedWorkItems = [];
+      const byKey = new Map(cfg.linkedWorkItems.filter(it => it.key).map(it => [it.key, it]));
+      for (const it of linkedClean) {
+        const existing = it.key ? byKey.get(it.key) : null;
+        if (existing) {
+          if (!existing.title && it.title) existing.title = it.title;
+          if (!existing.url   && it.url)   existing.url   = it.url;
+        } else {
+          cfg.linkedWorkItems.push(it);
+          if (it.key) byKey.set(it.key, it);
+          linkedAdded++;
+        }
+      }
+      if (typeof renderLinkedWorkItems === 'function') renderLinkedWorkItems();
+    }
+
     // Context words: ADDITIVE merge (union of terms + aliases). Unlike rules
     // and fields, the glossary accumulates across templates / manual edits —
     // the user curates it over time, so we never wipe what's already there.
@@ -816,6 +943,10 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
     if (envWritten) parts.push('+ default environment');
     if (templateSections) parts.push(`+ ${templateSections} report section${templateSections === 1 ? '' : 's'}`);
     if (ctxAdded) parts.push(`+ ${ctxAdded} context word${ctxAdded === 1 ? '' : 's'}`);
+    if (linkedAdded) parts.push(`+ 🔗 ${linkedAdded} linked item${linkedAdded === 1 ? '' : 's'}`);
+    if (sprintForced) {
+      parts.push(`+ Sprint id ${sprintForced.id}${sprintForced.state !== 'active' ? ` (⚠ ${sprintForced.state} — pick a current sprint before pushing)` : ''}`);
+    }
     toast('✓ ' + parts.join(' '));
   } catch (e) {
     toast('⚠ Analyze error: ' + e.message);

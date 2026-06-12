@@ -12,8 +12,117 @@ function renderSetup() {
   renderRules();
   renderFields();
   renderDefaultEnvStatus();
+  renderVoiceCleanupToggle();
+  renderLinkedWorkItems();
   refreshRestoreRulesUI();
   refreshRestoreFieldsUI();
+}
+
+// ── Linked work items (project defaults) ──────────────────────────────────
+// The list every generated report gets linked to. Auto-filled by Analyze
+// Template, manually curated here. Persisted to localStorage on every edit
+// (like Context words) — no 💾 Save needed.
+function _lwiSave() {
+  cfg.linkedWorkItems = normalizeLinkedWorkItems(cfg.linkedWorkItems);
+  localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+}
+
+function renderLinkedWorkItems() {
+  const list = document.getElementById('linkedList');
+  if (!list) return;
+  if (!Array.isArray(cfg.linkedWorkItems)) cfg.linkedWorkItems = [];
+  const items = cfg.linkedWorkItems;
+
+  // Keep the add-row relation dropdown populated (static options).
+  const addRel = document.getElementById('newLwiRel');
+  if (addRel && !addRel.options.length) addRel.innerHTML = linkRelationOptionsHtml(DEFAULT_LINK_RELATION);
+
+  if (!items.length) {
+    list.innerHTML = `<div style="font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;padding:6px 0">No linked work items yet. Add one below, or run <strong>Analyze Template</strong> to auto-extract from the reference bug.</div>`;
+    return;
+  }
+
+  list.innerHTML = items.map((it, i) => {
+    const url = linkedItemUrl(it);
+    const open = url
+      ? `<a class="lwi-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(url)}">↗</a>`
+      : `<span class="lwi-open" style="opacity:.25" title="No URL — set Jira base URL in Setup or paste a link">↗</span>`;
+    return `<div class="lwi-row">
+      <select onchange="updateLinkedWorkItem(${i}, 'relation', this.value)">${linkRelationOptionsHtml(it.relation)}</select>
+      <input type="text" value="${esc(it.key || '')}" placeholder="FER-123" oninput="updateLinkedWorkItem(${i}, 'key', this.value)"/>
+      <input type="text" value="${esc(it.title || '')}" placeholder="Title (optional)" oninput="updateLinkedWorkItem(${i}, 'title', this.value)"/>
+      ${open}
+      <button class="rule-del" onclick="removeLinkedWorkItem(${i})" title="Remove">×</button>
+    </div>`;
+  }).join('');
+}
+
+function addLinkedWorkItem() {
+  const relEl   = document.getElementById('newLwiRel');
+  const keyEl   = document.getElementById('newLwiKey');
+  const titleEl = document.getElementById('newLwiTitle');
+  const rawKey  = (keyEl?.value || '').trim();
+  if (!rawKey) { toast('⚠ Enter a ticket key (FER-123) or a Jira URL'); return; }
+  const key = extractLinkedIssueKey(rawKey);
+  if (!key) { toast('⚠ Could not find an issue key in "' + rawKey + '"'); return; }
+  if (!Array.isArray(cfg.linkedWorkItems)) cfg.linkedWorkItems = [];
+  cfg.linkedWorkItems.push({
+    relation: normalizeLinkRelation(relEl?.value),
+    key,
+    title: (titleEl?.value || '').trim(),
+    url: /^https?:\/\//i.test(rawKey) ? rawKey : '',
+  });
+  if (keyEl)   keyEl.value = '';
+  if (titleEl) titleEl.value = '';
+  _lwiSave();
+  renderLinkedWorkItems();
+  toast(`✓ Linked ${key}`);
+}
+
+// Edits update cfg in place WITHOUT re-rendering (keeps input focus while
+// typing) — except relation, which has no caret to preserve.
+function updateLinkedWorkItem(i, field, value) {
+  const it = cfg.linkedWorkItems && cfg.linkedWorkItems[i];
+  if (!it) return;
+  if (field === 'relation') it.relation = normalizeLinkRelation(value);
+  else it[field] = String(value);
+  // NOTE: persist raw — normalization (key uppercase, URL→key) happens in
+  // _lwiSave on add/remove and on push, so typing isn't fought mid-keystroke.
+  localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+}
+
+function removeLinkedWorkItem(i) {
+  if (!Array.isArray(cfg.linkedWorkItems)) return;
+  cfg.linkedWorkItems.splice(i, 1);
+  _lwiSave();
+  renderLinkedWorkItems();
+}
+
+// ── Dictation: Web Speech only / GPT-4o Transcribe ─────────────────────────
+// Persisted immediately (like the Context-words threshold) — flipping the
+// engine shouldn't require remembering to hit 💾 Save at the bottom.
+// cfg.voiceAiCleanup stores: false = off · 'gpt4o-transcribe'.
+// Retired modes (true / 'stop' / 'live' / 'whisper-turbo') migrate to
+// 'gpt4o-transcribe' in migrateCfg / importCfg.
+function voiceCleanupMode() {
+  return cfg.voiceAiCleanup === 'gpt4o-transcribe' ? 'gpt4o-transcribe' : 'off';
+}
+
+function renderVoiceCleanupToggle() {
+  const mode = voiceCleanupMode();
+  const off  = document.getElementById('vcOff');
+  const g4o  = document.getElementById('vcGpt4oTranscribe');
+  if (off)  off.classList.toggle('active',  mode === 'off');
+  if (g4o)  g4o.classList.toggle('active',  mode === 'gpt4o-transcribe');
+}
+
+function setVoiceCleanup(mode) {
+  cfg.voiceAiCleanup = (mode === 'gpt4o-transcribe') ? 'gpt4o-transcribe' : false;
+  localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+  renderVoiceCleanupToggle();
+  toast(mode === 'gpt4o-transcribe'
+    ? '✓ GPT-4o Transcribe — final text is transcribed from audio after Pause / Stop'
+    : '✓ Web Speech only — transcript is kept exactly as recognized');
 }
 
 // Updates the "not set / N chars" badge in the Default Environment card.
@@ -543,7 +652,15 @@ function importCfg(e) {
         ...JSON.parse(ev.target.result),
         jiraToken: cfg.jiraToken || '',
       };
+      // Migrate retired AI modes (true/'stop'/'whisper-turbo'/'live') to
+      // 'gpt4o-transcribe'; anything unrecognized falls back to the default.
+      if (cfg.voiceAiCleanup === true || cfg.voiceAiCleanup === 'stop' || cfg.voiceAiCleanup === 'whisper-turbo' || cfg.voiceAiCleanup === 'live') {
+        cfg.voiceAiCleanup = 'gpt4o-transcribe';
+      } else if (cfg.voiceAiCleanup !== false && cfg.voiceAiCleanup !== 'gpt4o-transcribe') {
+        cfg.voiceAiCleanup = DEFAULTS.voiceAiCleanup;
+      }
       if (!Array.isArray(cfg.contextWords)) cfg.contextWords = [];
+      cfg.linkedWorkItems = normalizeLinkedWorkItems(cfg.linkedWorkItems);
       cfg.reportTemplate = typeof normalizeReportTemplate === 'function'
         ? normalizeReportTemplate(cfg.reportTemplate)
         : (cfg.reportTemplate || DEFAULTS.reportTemplate);

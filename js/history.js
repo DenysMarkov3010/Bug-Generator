@@ -107,8 +107,14 @@ function renderHistory() {
 // editable.js input router and the 'history' resolver.
 function renderHistoryBody(item) {
   const r = item.report || {};
-  if (item.format === 'gherkin') return renderEditableGherkinBody(r);
-  return renderEditableNormalBody(r, 'history:' + item.id);
+  const resultId = 'history:' + item.id;
+  const body = item.format === 'gherkin'
+    ? renderEditableGherkinBody(r, resultId)
+    : renderEditableNormalBody(r, resultId);
+  // Linked work items are editable here too — the history resolver persists
+  // edits back to localStorage, so a re-push picks up the curated links.
+  const linked = typeof renderLinkedItemsBlock === 'function' ? renderLinkedItemsBlock(r, resultId) : '';
+  return body + linked;
 }
 
 function toggleHistoryItem(i) {
@@ -155,7 +161,7 @@ Actual result:
 ${r.actualResult || ''}
 
 Expected result:
-${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}`;
+${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}${typeof buildLinkedWorkItemsText === 'function' ? buildLinkedWorkItemsText(r) : ''}`;
   } else {
     txt = typeof buildNormalPlainText === 'function' ? buildNormalPlainText(r) : `${r.summary || ''}`;
   }

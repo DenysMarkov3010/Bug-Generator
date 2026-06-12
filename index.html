@@ -5,7 +5,7 @@
   <title>Bug Report Agent</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="css/styles.css?v=no-live" />
 </head>
 <body>
 <div class="app">
@@ -53,6 +53,9 @@
         <div class="voice-info">
           <div class="v-status" id="vSt">Tap to dictate</div>
           <div class="v-hint"   id="vHt">Ukrainian or English — report will always be in English</div>
+          <div class="v-live" id="vLive" style="display:none">
+            <div class="v-meter"><div class="v-meter-fill" id="vMeterFill"></div></div>
+          </div>
         </div>
         <div class="lang-toggle">
           <button class="lang-btn active" id="lUk" onclick="setLang('uk-UA')">УК</button>
@@ -114,6 +117,13 @@
           </div>
         </div>
 
+        <!-- Live input-level bar — same signal as the Single Report meter;
+             shown while any Batch card is recording. -->
+        <div class="v-live" id="sLive" style="display:none;margin:0 0 12px">
+          <span style="font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--red);text-transform:uppercase;letter-spacing:.07em;flex-shrink:0">🔴 Rec</span>
+          <div class="v-meter" style="width:100%;flex:1"><div class="v-meter-fill" id="sMeterFill"></div></div>
+        </div>
+
         <div id="bugCards"></div>
 
         <button class="btn btn-ghost" onclick="addBugCard()" style="width:100%;justify-content:center;margin-bottom:1rem;border-style:dashed">
@@ -173,6 +183,23 @@
 
       <div class="card">
         <div class="card-head">
+          <span class="card-title">Dictation</span>
+          <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">applies to Single Report &amp; Batch mics · saved instantly</span>
+        </div>
+        <div class="card-body">
+          <div class="lang-toggle" style="background:var(--surface2);display:inline-flex">
+            <button class="lang-btn" id="vcOff"  onclick="setVoiceCleanup('off')">Web Speech only</button>
+            <button class="lang-btn" id="vcGpt4oTranscribe" onclick="setVoiceCleanup('gpt4o-transcribe')">🤖 GPT-4o Transcribe</button>
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6">
+            <strong style="color:var(--muted)">Web Speech only</strong> — instant live transcript from the browser recognizer (Context-words glossary still auto-corrects terms as you speak).<br>
+            <strong style="color:var(--muted)">🤖 GPT-4o Transcribe</strong> — records clean audio while you dictate (Siri-style equalizer instead of a live draft); the accurate, multilingual transcript appears after Pause / Stop. Handles the Ukrainian + English-terms mix in either direction. Needs OpenRouter selected with an OpenRouter API key; if a call fails, nothing is lost — re-record or type.
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
           <span class="card-title">AI rules</span>
           <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">Claude follows these · Analyze Template REPLACES this list</span>
         </div>
@@ -185,6 +212,27 @@
           <div id="restoreRulesRow" style="display:none;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)">
             <button class="btn btn-ghost btn-sm" onclick="restorePreviousRules()" title="Bring back the rules saved before the last Analyze Template run">↶ Restore previous rules</button>
             <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace;margin-left:6px"><span id="restoreRulesCount">0</span> rules · from last Analyze Template</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Linked work items</span>
+          <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">attached to every generated report · saved instantly</span>
+        </div>
+        <div class="card-body">
+          <div id="linkedList"></div>
+          <div class="add-row" style="flex-wrap:wrap;gap:6px">
+            <select id="newLwiRel" style="flex:0 0 auto"></select>
+            <input type="text" id="newLwiKey" placeholder="FER-123 or Jira URL" style="flex:0 0 170px" onkeydown="if(event.key==='Enter')addLinkedWorkItem()"/>
+            <input type="text" id="newLwiTitle" placeholder="Title (optional)" style="flex:1;min-width:140px" onkeydown="if(event.key==='Enter')addLinkedWorkItem()"/>
+            <button class="btn btn-ghost btn-sm" onclick="addLinkedWorkItem()">+ Add</button>
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6">
+            Every generated report gets these links attached (editable per report before pushing).
+            <strong style="color:var(--muted)">🔍 Analyze Template</strong> auto-fills this list when the reference bug shows linked issues.
+            On <strong style="color:var(--muted)">🚀 Push to Jira</strong> real issue links are created with the chosen relation.
           </div>
         </div>
       </div>
@@ -374,18 +422,18 @@
 
 <!-- Scripts are loaded in dependency order. Each file adds functions to the
      global scope, so existing onclick="..." handlers keep working. -->
-<script src="js/state.js"></script>
-<script src="js/utils.js"></script>
+<script src="js/state.js?v=sprint-fix"></script>
+<script src="js/utils.js?v=revert-linked"></script>
 <script src="js/ui.js"></script>
-<script src="js/config.js"></script>
-<script src="js/voice.js?v=ctxwords"></script>
-<script src="js/template.js"></script>
-<script src="js/editable.js"></script>
-<script src="js/ai.js"></script>
-<script src="js/jira.js"></script>
-<script src="js/history.js"></script>
-<script src="js/session.js"></script>
+<script src="js/config.js?v=no-live"></script>
+<script src="js/voice.js?v=audio-session"></script>
+<script src="js/template.js?v=sprint-fix"></script>
+<script src="js/editable.js?v=no-live"></script>
+<script src="js/ai.js?v=no-live"></script>
+<script src="js/jira.js?v=sprint-fix"></script>
+<script src="js/history.js?v=no-live"></script>
+<script src="js/session.js?v=audio-session"></script>
 <script src="js/context.js"></script>
-<script src="js/app.js"></script>
+<script src="js/app.js?v=no-live"></script>
 </body>
 </html>

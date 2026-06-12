@@ -79,18 +79,23 @@ function renderCards() {
     // previous card folds down and the focus stays on the new one.
     // Click the row to expand it back into a full editable card.
     if (card.collapsed) {
-      const preview = (card.text || '').trim().slice(0, 140) || '(no dictation captured)';
-      const more = (card.text || '').length > 140 ? '…' : '';
+      // While GPT-4o still processes this card's audio, say so instead of
+      // the misleading "(no dictation captured)" — the text arrives shortly.
+      const preview = card.transcribing
+        ? '⏳ Transcribing with GPT-4o…'
+        : ((card.text || '').trim().slice(0, 140) || '(no dictation captured)');
+      const more = (!card.transcribing && (card.text || '').length > 140) ? '…' : '';
+      const tag = card.result ? ' · generated' : (card.transcribing ? ' · transcribing…' : ' · dictated');
       return `
       <div class="card collapsed-card" id="card-${card.id}" onclick="expandCard(${card.id})" style="margin-bottom:.75rem;cursor:pointer">
         <div class="card-head" style="padding:8px 12px">
-          <span class="card-title">Bug #${idx + 1}${card.result ? ' · generated' : ' · dictated'}</span>
+          <span class="card-title">Bug #${idx + 1}${tag}</span>
           <div style="display:flex;align-items:center;gap:8px">
             <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">tap to edit</span>
             <button class="rule-del" onclick="event.stopPropagation();removeCard(${card.id})" title="Remove">×</button>
           </div>
         </div>
-        <div style="padding:6px 12px 10px;font-size:12px;color:var(--muted);line-height:1.5">${esc(preview)}${more}</div>
+        <div style="padding:6px 12px 10px;font-size:12px;color:${card.transcribing ? 'var(--blue)' : 'var(--muted)'};line-height:1.5">${esc(preview)}${more}</div>
       </div>`;
     }
     return `
@@ -124,7 +129,7 @@ function renderCardResult(card) {
   const r = card.result || {};
   const isGherkin = sessionFormat === 'gherkin';
   const resultId  = 'card:' + card.id;
-  const body = isGherkin ? renderEditableGherkinBody(r) : renderEditableNormalBody(r, resultId);
+  const body = isGherkin ? renderEditableGherkinBody(r, resultId) : renderEditableNormalBody(r, resultId);
 
   return `<div data-result-id="${resultId}" style="background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-top:4px">
     <div style="padding:8px 12px;border-bottom:0.5px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
@@ -132,6 +137,7 @@ function renderCardResult(card) {
       <span style="font-size:10px;color:var(--dim);font-family:'IBM Plex Mono',monospace">click anywhere to edit</span>
     </div>
     <div style="padding:12px">${body}</div>
+    ${typeof renderLinkedItemsBlock === 'function' ? renderLinkedItemsBlock(r, resultId) : ''}
     <div style="padding:8px 12px;border-top:0.5px solid var(--border);display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn btn-ghost btn-sm" onclick="copyCardReport(${card.id})">📋 Copy</button>
       <button class="btn btn-ghost btn-sm" onclick="pushCardReport(${card.id})">🚀 Push to Jira</button>
@@ -178,13 +184,34 @@ function startCardRec(card) {
   let committed      = '';
   let prevFrameFinal = '';
   let userStop       = false;
+  let stopDoneResolve = null;
+  card._stopDone = new Promise(resolve => { stopDoneResolve = resolve; });
 
   card.recog.onstart = () => {
     card.isRec = true;
     const btn = document.getElementById('mic-' + card.id);
     if (btn) { btn.classList.add('rec'); btn.textContent = '⏹'; }
+    // Hold the input device open across Chrome's silence-triggered restarts
+    // (see voice.js acquireMicStream) — Bluetooth headsets otherwise drop
+    // the first words after every pause while the device re-opens.
+    // Each card records into its OWN audio session (closure-scoped recorder
+    // + chunks), so the "+ Add bug" overlap — card N still finalizing while
+    // card N+1 already records — can't cross-contaminate or wipe buffers.
+    if (typeof acquireMicStream === 'function') {
+      acquireMicStream().then(() => {
+        if (card.isRec && !card._audio && typeof createAudioSession === 'function') {
+          card._audio = createAudioSession();
+        }
+      });
+    }
   };
   card.recog.onresult = e => {
+    // GPT-4o Transcribe mode shows NO live draft (ChatGPT-style) — the audio
+    // is captured by the recorder and the polished text appears only after
+    // Pause/Stop. Web Speech still runs to drive the lifecycle; we just drop
+    // its low-quality interim text. The Session PiP shows an animated
+    // equalizer instead (see _renderSessionPip).
+    if (cfg.voiceAiCleanup === 'gpt4o-transcribe') return;
     let frameFinal   = '';
     let frameInterim = '';
     for (let i = 0; i < e.results.length; i++) {
@@ -236,7 +263,28 @@ function startCardRec(card) {
     card.isRec = false;
     const btn = document.getElementById('mic-' + card.id);
     if (btn) { btn.classList.remove('rec'); btn.textContent = '🎙'; }
+    // ALWAYS keep the recorded audio — in GPT-4o mode it IS the text. The
+    // old `discard on PiP pause` logic (a whisper-era leftover) silently
+    // threw the chunk away, so pausing produced no transcript at all.
+    const session = card._audio;
+    card._audio = null;
+    const stopAudio = session ? session.stop() : Promise.resolve(null);
+    stopAudio.then(audioBlob => {
+      // Let go of the mic ONLY if no other card picked it up — in the
+      // "+ Add bug" flow the next card is already recording on this stream.
+      if (typeof releaseMicStream === 'function' && !sessionCards.some(c => c.isRec)) {
+        releaseMicStream();
+      }
+      if (cfg.voiceAiCleanup === 'gpt4o-transcribe') return maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob);
+      return null;
+    }).finally(() => {
+      if (stopDoneResolve) stopDoneResolve();
+    });
   };
+  // NOTE: no releaseMicStream here — onerror also fires for benign
+  // 'no-speech' pauses that onend immediately restarts from; dropping the
+  // held stream there would re-introduce the device-reopen gap. Every real
+  // stop goes through onend above, which does release.
   card.recog.onerror = () => {
     card.isRec = false;
     const btn = document.getElementById('mic-' + card.id);
@@ -255,6 +303,62 @@ function stopCardRec(card) {
   if (card && card.recog) {
     try { card.recog.stop(); } catch {}
   }
+  return card?._stopDone || Promise.resolve();
+}
+
+async function maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob) {
+  if (!audioBlob || !audioBlob.size) return;
+  if (!apiKey || typeof transcribeWithGpt4o !== 'function') return;
+
+  // Mark the card as in-flight and repaint statuses everywhere — the Batch
+  // page shows "⏳ transcribing…" and the PiP accordion shows a blue
+  // ⏳ TRANSCRIBING pill instead of a misleading EMPTY, even when the user
+  // has already moved on to dictating the next card (+ Add bug flow).
+  card.transcribing = true;
+  renderCards();
+  _refreshSessionPipStatuses();
+
+  try {
+    const snapshot = card.text || '';
+    const btn = document.getElementById('mic-' + card.id);
+    if (btn && !card.isRec) { btn.textContent = '🤖'; btn.title = 'Transcribing with GPT-4o…'; }
+
+    let transcribed = '';
+    try {
+      const hint = typeof transcribeLanguageHint === 'function' ? transcribeLanguageHint(sessionLang) : '';
+      transcribed = await transcribeWithGpt4o(audioBlob, hint);
+    } catch (e) {
+      try { toast('⚠ GPT-4o transcription failed — keeping browser transcript (' + e.message + ')'); } catch {}
+    }
+
+    const btnAfter = document.getElementById('mic-' + card.id);
+    if (btnAfter && !card.isRec) { btnAfter.textContent = '🎙'; btnAfter.title = ''; }
+
+    transcribed = (typeof correctTranscript === 'function') ? correctTranscript(transcribed) : transcribed;
+    transcribed = String(transcribed || '').trim();
+    if (!transcribed || card.isRec) return;
+    if ((card.text || '') !== snapshot) return;   // user edited meanwhile
+
+    card.text = (baseTxt ? baseTxt + ' ' : '') + transcribed;
+    const ta = document.getElementById('txt-' + card.id);
+    if (ta) ta.value = card.text;
+    try { toast('✓ GPT-4o transcript applied'); } catch {}
+  } finally {
+    // Flip ⏳ → DICTATED (or back to EMPTY on failure) on both surfaces,
+    // regardless of which early-return path was taken.
+    card.transcribing = false;
+    renderCards();
+    _refreshSessionPipStatuses();
+  }
+}
+
+// Repaint the PiP accordion so per-card status pills stay truthful while a
+// background transcription starts/finishes. Skipped in paused-edit mode —
+// a full re-render there would yank the caret out of the contenteditable
+// the user is typing in (statuses catch up on Resume / next render).
+function _refreshSessionPipStatuses() {
+  if (!sessionPip || sessionPipPaused) return;
+  try { _renderSessionPip(); } catch {}
 }
 
 // ── parallel generate ─────────────────────────────────────────────────────
@@ -333,6 +437,12 @@ let sessionPipBusy        = false;  // disable buttons while transcription in fl
 let sessionPipPaused      = false;  // Browser engine: user tapped Pause
 let sessionPipLastInterim = '';     // mirrored from per-card recog so PiP body shows it
 
+function normalizeSessionPipText(s) {
+  return typeof normalizePipEditableText === 'function'
+    ? normalizePipEditableText(s)
+    : String(s || '').replace(/^[\s\u00a0]+/, '');
+}
+
 // Internal: open the OS-level PiP window with the right HTML / CSS. Must
 // be called synchronously from a user gesture (the "Dictate all" click).
 async function _createSessionPipWindow() {
@@ -369,6 +479,24 @@ async function _createSessionPipWindow() {
       @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
       .rec-dot.paused{animation:none;background:var(--muted);box-shadow:none;opacity:.4}
       .rec-dot.transcribing{animation:none;background:var(--blue);box-shadow:0 0 8px rgba(96,175,255,.5)}
+      /* Spinner shown on the Pause button + body while a paused chunk is being transcribed by GPT-4o. */
+      .pip-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:pipspin .7s linear infinite;vertical-align:-2px}
+      .pip-spin-lg{width:30px;height:30px;border-width:3px;border-top-color:var(--blue);vertical-align:0}
+      @keyframes pipspin{to{transform:rotate(360deg)}}
+      .pause-btn:disabled,.stop-btn:disabled{cursor:default;opacity:.55}
+      /* Siri-style equalizer for GPT-4o mode (no live transcript) — centre-
+         anchored gradient bars driven by updatePipEqLevel. */
+      .pip-rec{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:14px 0}
+      .pip-eq{display:flex;align-items:center;justify-content:center;gap:6px;height:60px}
+      .pip-eq span{width:7px;height:4px;border-radius:999px;background:#a78bfa;box-shadow:0 0 12px rgba(167,139,250,.5);transition:height 80ms cubic-bezier(.4,0,.2,1)}
+      .pip-eq span:nth-child(1){background:#5ee7ff;box-shadow:0 0 12px rgba(94,231,255,.5)}
+      .pip-eq span:nth-child(2){background:#7cc4ff;box-shadow:0 0 12px rgba(124,196,255,.5)}
+      .pip-eq span:nth-child(3){background:#9aa7fb;box-shadow:0 0 12px rgba(154,167,251,.5)}
+      .pip-eq span:nth-child(4){background:#a78bfa;box-shadow:0 0 12px rgba(167,139,250,.5)}
+      .pip-eq span:nth-child(5){background:#c08bf0;box-shadow:0 0 12px rgba(192,139,240,.5)}
+      .pip-eq span:nth-child(6){background:#df7ddb;box-shadow:0 0 12px rgba(223,125,219,.5)}
+      .pip-eq span:nth-child(7){background:#f472b6;box-shadow:0 0 12px rgba(244,114,182,.5)}
+      .pip-rec-label{font-size:12px;color:var(--muted);text-align:center}
       .lang-pill{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);background:var(--surface3);padding:3px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.07em;font-weight:500}
       .body{flex:1;display:flex;flex-direction:column;padding:12px;background:var(--bg);overflow-y:auto;overflow-x:hidden;font-size:14px;line-height:1.55;color:var(--text);word-wrap:break-word;user-select:text;min-height:0}
       .body.empty{color:var(--dim);font-style:italic;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:14px;white-space:pre-wrap}
@@ -455,7 +583,7 @@ async function _createSessionPipWindow() {
       if (!cid) return;
       const card = sessionCards.find(c => c.id === cid);
       if (!card) return;
-      card.text = el.innerText;
+      card.text = normalizeSessionPipText(el.innerText);
       const ta = document.getElementById('txt-' + cid);
       if (ta) ta.value = card.text;
     });
@@ -503,7 +631,7 @@ function _setSessionPipExpanded(cardId) {
       const cid = parseInt(cur.dataset.cardId, 10);
       const c = sessionCards.find(x => x.id === cid);
       if (c) {
-        c.text = cur.innerText;
+        c.text = normalizeSessionPipText(cur.innerText);
         const ta = document.getElementById('txt-' + cid);
         if (ta) ta.value = c.text;
       }
@@ -566,7 +694,9 @@ function _renderSessionPip() {
   } else {
     label.textContent = 'Recording — Bug #' + idx;
     if (dot)    { dot.classList.remove('paused','transcribing'); }
-    if (pause)  { pause.style.display  = 'flex'; pause.disabled  = false; }
+    // Reset the Pause button label too — it may still hold the transcribing
+    // spinner from a previous Pause.
+    if (pause)  { pause.style.display  = 'flex'; pause.disabled  = false; pause.innerHTML = '⏸ Pause'; }
     if (resume) { resume.style.display = 'none'; resume.disabled = false; }
     if (addBtn) addBtn.disabled = false;
     if (stop)   { stop.style.display = 'flex'; stop.disabled = false; }
@@ -593,7 +723,12 @@ function _renderSessionPip() {
     const num = i + 1;
 
     let status;
-    if (isActive) {
+    if (c.transcribing && !c.isRec) {
+      // GPT-4o transcription in flight for this card — shown even when the
+      // card is collapsed and the user already dictates the next one, so a
+      // just-stopped bug never reads as a misleading EMPTY.
+      status = '<span class="pip-card-status" style="color:#60afff">⏳ TRANSCRIBING</span>';
+    } else if (isActive) {
       if (sessionPipBusy)        status = '<span class="pip-card-status" style="color:#60afff">⏳ TRANSCRIBING</span>';
       else if (sessionPipPaused) status = '<span class="pip-card-status">⏸ PAUSED</span>';
       else                       status = '<span class="pip-card-status">🔴 RECORDING</span>';
@@ -624,22 +759,33 @@ function _renderSessionPip() {
     let inner;
     let dimCls = '';
     if (isActive && !sessionPipPaused) {
-      const committed = (c.text || '').trim();
-      const live      = (sessionPipLastInterim || '').trim();
-      if (!committed && !live) {
-        inner = 'Waiting for speech…'; dimCls = ' dim';
+      if (cfg.voiceAiCleanup === 'gpt4o-transcribe') {
+        // GPT-4o mode shows no live transcript — render the Siri-style
+        // equalizer that reacts to the live mic level (updatePipEqLevel).
+        const eq = (typeof eqBarsMarkup === 'function')
+          ? eqBarsMarkup('spipEq')
+          : '<div class="pip-eq" id="spipEq">' + '<span></span>'.repeat(7) + '</div>';
+        inner = sessionPipBusy
+          ? '<div class="pip-rec"><div class="pip-rec-label">⏳ Transcribing…</div></div>'
+          : '<div class="pip-rec">' + eq + '<div class="pip-rec-label">Recording — text appears when you Pause or Stop</div></div>';
       } else {
-        let html = '';
-        if (committed) html += escTxt(committed);
-        if (live)      html += (html ? ' ' : '') + '<span class="interim">' + escTxt(live) + '</span>';
-        inner = html;
+        const committed = (c.text || '').trim();
+        const live      = (sessionPipLastInterim || '').trim();
+        if (!committed && !live) {
+          inner = 'Waiting for speech…'; dimCls = ' dim';
+        } else {
+          let html = '';
+          if (committed) html += escTxt(committed);
+          if (live)      html += (html ? ' ' : '') + '<span class="interim">' + escTxt(live) + '</span>';
+          inner = html;
+        }
       }
     } else {
       // Either a previous card (not active) OR the active card while
       // paused — show plain text so the user can read / edit it.
       const txt = (c.text || '').trim();
       if (txt) {
-        inner = escTxt(txt);
+        inner = escTxt(normalizeSessionPipText(txt));
       } else {
         inner = editable ? '(empty — click to type)' : '(no dictation captured yet)';
         dimCls = ' dim';
@@ -774,13 +920,42 @@ async function onSessionPipPause() {
   const card = sessionCards.find(c => c.id === sessionPipActiveId);
   if (!card) return;
 
-  if (card.isRec) stopCardRec(card);
-
   sessionPipPaused = true;
+  if (card.isRec) {
+    // GPT-4o: stopping the card kicks off a transcription network call that
+    // `await stopCardRec` blocks on — show a spinner immediately so the wait
+    // is obvious (otherwise the equalizer just freezes).
+    if (cfg.voiceAiCleanup === 'gpt4o-transcribe') showSessionPipTranscribing();
+    await stopCardRec(card);
+  }
+
   // The expanded pip-card-body flips to contenteditable in _renderSessionPip,
   // so the user can fix the just-captured text inline. Resume will commit
   // any edits back into card.text before re-arming dictation.
   _renderSessionPip();
+}
+
+// Counterpart of voice.js showPipTranscribing for the Batch/session PiP:
+// spinner on the Pause button + in the body while a paused chunk transcribes.
+// Cleared by the _renderSessionPip() that runs once transcription resolves.
+function showSessionPipTranscribing() {
+  if (!sessionPip) return;
+  const doc   = sessionPip.document;
+  const pause = doc.getElementById('spipPause');
+  const stop  = doc.getElementById('spipStop');
+  const label = doc.getElementById('spipLabel');
+  const dot   = doc.getElementById('spipDot');
+  const body  = doc.getElementById('spipBody');
+  if (pause) { pause.disabled = true; pause.innerHTML = '<span class="pip-spin"></span> Transcribing…'; }
+  if (stop)  { stop.disabled = true; }
+  if (label) label.textContent = 'Transcribing with GPT-4o…';
+  if (dot)   { dot.classList.remove('paused'); dot.classList.add('transcribing'); }
+  if (body)  {
+    body.classList.add('empty');
+    body.innerHTML =
+      '<div class="pip-rec"><span class="pip-spin pip-spin-lg"></span>' +
+      '<div class="pip-rec-label">Transcribing with GPT-4o…</div></div>';
+  }
 }
 
 function onSessionPipResume() {
@@ -796,7 +971,7 @@ function onSessionPipResume() {
       const cid = parseInt(el.dataset.cardId, 10);
       const c = sessionCards.find(x => x.id === cid);
       if (!c) return;
-      c.text = el.innerText;
+      c.text = normalizeSessionPipText(el.innerText);
       const ta = document.getElementById('txt-' + cid);
       if (ta) ta.value = c.text;
     });
@@ -812,7 +987,7 @@ function onSessionPipResume() {
 }
 
 // "+ Add bug" — stop current, wait for transcription if needed, add a new
-// card, start dictating it. The async middle bit (Whisper transcription)
+// card, start dictating it. The async middle bit (GPT-4o transcription)
 // is what makes this less trivial than the Browser path.
 async function onSessionPipAddBug() {
   if (sessionPipBusy) return;
@@ -845,7 +1020,7 @@ async function onSessionPipStop(opts) {
   const o = opts || {};
   const card = sessionCards.find(c => c.id === sessionPipActiveId);
 
-  if (card && card.isRec) stopCardRec(card);
+  if (card && card.isRec) await stopCardRec(card);
 
   sessionPipActiveId    = null;
   sessionPipPaused      = false;
@@ -868,7 +1043,7 @@ function onSessionPipApplyClose() {
       const cid = parseInt(el.dataset.cardId, 10);
       const c = sessionCards.find(x => x.id === cid);
       if (!c) return;
-      c.text = el.innerText;
+      c.text = normalizeSessionPipText(el.innerText);
       const ta = document.getElementById('txt-' + cid);
       if (ta) ta.value = c.text;
     });

@@ -15,11 +15,25 @@ Actual result:
 ${r.actualResult || ''}
 
 Expected result:
-${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}`;
+${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}${buildLinkedWorkItemsText(r)}`;
   } else {
     txt = buildNormalPlainText(r);
   }
   navigator.clipboard.writeText(txt).then(() => toast('✓ Copied to clipboard'));
+}
+
+// Plain-text "Linked work items" footer for Copy (both formats + History).
+// Returns '' when the report has no links so existing copies stay unchanged.
+function buildLinkedWorkItemsText(r) {
+  const items = (typeof normalizeLinkedWorkItems === 'function')
+    ? normalizeLinkedWorkItems(r && r.linkedWorkItems)
+    : [];
+  if (!items.length) return '';
+  const lines = items.map(it => {
+    const url = (typeof linkedItemUrl === 'function') ? linkedItemUrl(it) : (it.url || '');
+    return `- ${it.relation} ${it.key}${it.title ? ` — ${it.title}` : ''}${url ? ` (${url})` : ''}`;
+  });
+  return `\n\nLinked work items:\n${lines.join('\n')}`;
 }
 
 function buildNormalPlainText(r) {
@@ -47,7 +61,7 @@ function buildNormalPlainText(r) {
   if (r.environment && String(r.environment).trim()) {
     parts.push(`Environment: ${r.environment}`);
   }
-  return parts.filter(p => p !== '').join('\n\n');
+  return parts.filter(p => p !== '').join('\n\n') + buildLinkedWorkItemsText(r);
 }
 
 // ── unified Jira request helper ───────────────────────────────────────────
@@ -377,7 +391,11 @@ function shapeJiraValue(jiraId, value, fieldName = '') {
         `or re-fetch the template — Sprint values are now extracted with IDs.`
       );
     }
-    return ids;
+    // Jira's sprint field takes a SINGLE numeric id on create/edit — an
+    // array is rejected as an invalid sprint value. When several ids were
+    // listed (an issue drags its whole sprint history along), the last one
+    // is the most recent.
+    return ids[ids.length - 1];
   }
 
   if (jiraId === 'components' || jiraId === 'fixVersions' || jiraId === 'versions') {
@@ -491,10 +509,18 @@ async function pushToJira() {
       }
     }
 
+    // Create the report's Linked work items as real Jira issue links. Link
+    // failures must NOT fail the push — the bug already exists; surface a
+    // warning instead so the user can link manually.
+    const linkRes = await createIssueLinks(d.key, r.linkedWorkItems);
+    if (linkRes.fails.length) {
+      toast(`⚠ ${linkRes.fails.length} of ${linkRes.total} issue link${linkRes.total === 1 ? '' : 's'} failed:\n` + linkRes.fails.join('\n'));
+    }
+
     // Open the newly-created issue in a new tab so the user can verify it
     // immediately. `d.self` is the API URL; we derive the browse URL from
     // the base Jira URL + issue key, which is the human-facing page.
-    toast(`✓ Created ${d.key} in Jira — opening…`);
+    toast(`✓ Created ${d.key}${linkRes.ok ? ` · 🔗 ${linkRes.ok} link${linkRes.ok === 1 ? '' : 's'}` : ''} — opening…`);
     const base   = (cfg.jiraUrl || '').trim().replace(/\/+$/, '');
     const issueUrl = `${base}/browse/${d.key}`;
     const win = window.open(issueUrl, '_blank', 'noopener,noreferrer');
@@ -513,6 +539,38 @@ async function pushToJira() {
   } catch (e) {
     showErr('Jira error: ' + annotateJiraError(e.message));
   }
+}
+
+// ── issue links ───────────────────────────────────────────────────────────
+// Creates one Jira issue link per Linked work item of the report. Direction
+// matters: Jira reads {inwardIssue: A, outwardIssue: B, type: T} as
+// "A <T.inward> B" / "B <T.outward> A", so the new bug goes on whichever
+// side carries the relation phrase the user picked (see
+// LINKED_WORK_ITEM_RELATIONS in state.js). Each link is attempted
+// independently; failures are collected, never thrown.
+async function createIssueLinks(newKey, items) {
+  const list = (typeof normalizeLinkedWorkItems === 'function'
+    ? normalizeLinkedWorkItems(items) : []).filter(it => it.key);
+  const out = { total: list.length, ok: 0, fails: [] };
+  for (const item of list) {
+    const rel = LINKED_WORK_ITEM_RELATIONS.find(r => r.label === item.relation)
+             || LINKED_WORK_ITEM_RELATIONS[0];
+    const body = { type: { name: rel.jiraType } };
+    if (rel.side === 'outward') {
+      body.outwardIssue = { key: newKey };
+      body.inwardIssue  = { key: item.key };
+    } else {
+      body.inwardIssue  = { key: newKey };
+      body.outwardIssue = { key: item.key };
+    }
+    try {
+      await jiraRequest('/rest/api/3/issueLink', 'POST', body);
+      out.ok++;
+    } catch (e) {
+      out.fails.push(`${item.key} (${item.relation}): ${e.message}`);
+    }
+  }
+  return out;
 }
 
 // Catch common Jira API gotchas where the raw error message is technically

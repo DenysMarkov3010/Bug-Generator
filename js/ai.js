@@ -49,8 +49,12 @@ function buildSystemPrompt(opts) {
   better than an invented value that won't exist in Jira.`
     : '';
 
+  // The raw description is often dictated by voice, so it can carry
+  // speech-recognition artifacts. Telling the model that explicitly lets it
+  // recover the intended words from context instead of copying mishearings.
+  const dictationNote = 'The description is often dictated by voice in Ukrainian with technical terms / UI labels spoken in English, so it may contain speech-recognition errors: misheard words, broken word boundaries, and English terms transliterated into Cyrillic («чекаут пейдж» = "Checkout page"). Infer the intended words from context instead of copying obvious mishearings verbatim, and restore transliterated English terms to their proper English spelling.';
   if (isGherkin) {
-    return `You are a senior QA engineer. Given a raw bug description (may be Ukrainian or English), write a bug report IN ENGLISH ONLY using a Gherkin scenario style. Use plain, simple language (B2 level).
+    return `You are a senior QA engineer. Given a raw bug description (may be Ukrainian or English), write a bug report IN ENGLISH ONLY using a Gherkin scenario style. Use plain, simple language (B2 level). ${dictationNote}
 
 Project rules (follow them precisely):
 ${rulesText}${cfDesc}${envRule}
@@ -92,7 +96,7 @@ Respond ONLY with valid JSON, no markdown fences:
   const exampleSections = {};
   reportTpl.sections.forEach(s => { exampleSections[s.id] = s.type === 'list' ? ['...'] : '...'; });
 
-  return `You are a senior QA engineer. Given a raw bug description (may be Ukrainian or English), write a structured bug report IN ENGLISH ONLY.
+  return `You are a senior QA engineer. Given a raw bug description (may be Ukrainian or English), write a structured bug report IN ENGLISH ONLY. ${dictationNote}
 
 Project rules (follow them precisely — both content and any formatting / styling conventions):
 ${rulesText}${cfDesc}${envRule}
@@ -125,7 +129,7 @@ async function callAi(systemPrompt, userText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
       body: JSON.stringify({
-        model: 'openrouter/auto',
+        model: cfg.openRouterModel || 'openrouter/auto',
         max_tokens: 1600,
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
       }),
@@ -140,7 +144,14 @@ async function callAi(systemPrompt, userText) {
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      // Required for calling the Anthropic API straight from a browser page
+      // (no backend in between) — opts in to CORS-enabled direct access.
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1600,
@@ -154,6 +165,53 @@ async function callAi(systemPrompt, userText) {
   }
   const data = await res.json();
   return data.content.map(i => i.text || '').join('');
+}
+
+// ── OpenRouter speech-to-text ─────────────────────────────────────────────
+// Used by Setup → Dictation → "GPT-4o Transcribe". Browser Web Speech still
+// provides the instant live preview; this runs after Stop and replaces the
+// dictated chunk with a higher-accuracy transcription from the recorded
+// audio. GPT-4o Transcribe is natively multilingual, so a Ukrainian
+// dictation peppered with English terms ("Checkout page", "crash") comes
+// back with the English words spelled in English rather than the Cyrillic
+// transliteration a monolingual recognizer produces.
+async function transcribeWithGpt4o(audioBlob, languageHint) {
+  if (!apiKey) throw new Error('Missing OpenRouter API key');
+  if (provider !== 'openrouter') throw new Error('Switch AI provider to OpenRouter in Setup');
+  if (!audioBlob || !audioBlob.size) throw new Error('No audio was recorded');
+  const fmt = audioBlob.type.includes('webm') ? 'webm'
+    : audioBlob.type.includes('ogg') ? 'ogg'
+      : audioBlob.type.includes('mp4') ? 'mp4'
+        : audioBlob.type.includes('mpeg') || audioBlob.type.includes('mp3') ? 'mp3'
+          : 'wav';
+  const buf = await audioBlob.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  const body = {
+    model: 'openai/gpt-4o-transcribe',
+    input_audio: {
+      data: btoa(binary),
+      format: fmt,
+    },
+    temperature: 0,
+  };
+  if (languageHint) body.language = languageHint;
+
+  const res = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.error?.message || e.message || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return String(data.text || data.transcription || data.output_text || '').trim();
 }
 
 // ── robust JSON extraction ────────────────────────────────────────────────
@@ -219,6 +277,10 @@ function normalizeAiResult(rawText, isGherkin) {
       });
       out.customFields = cfOut;
     }
+    // Every report starts with a COPY of the project-default linked work
+    // items (Setup → Linked work items); per-report edits on the result
+    // card touch only this copy, never the defaults.
+    out.linkedWorkItems = normalizeLinkedWorkItems(JSON.parse(JSON.stringify(cfg.linkedWorkItems || [])));
     return out;
   }
 
@@ -249,6 +311,8 @@ function normalizeAiResult(rawText, isGherkin) {
     });
     out.customFields = cfOut;
   }
+  // Copy of the project-default linked work items — see the gherkin branch.
+  out.linkedWorkItems = normalizeLinkedWorkItems(JSON.parse(JSON.stringify(cfg.linkedWorkItems || [])));
   return out;
 }
 
@@ -298,6 +362,7 @@ function renderResultNormal(r) {
         <span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)">${esc(cfg.projectKey || 'QA')} · ${esc(cfg.issueType || 'Bug')}</span>
       </div>
       <div class="res-body">${renderEditableNormalBody(r, 'report')}</div>
+      ${renderLinkedItemsBlock(r, 'report')}
       <div class="res-actions">
         <button class="btn btn-ghost btn-sm" onclick="copyReport()">📋 Copy</button>
         <button class="btn btn-ghost btn-sm" onclick="pushToJira()">🚀 Push to Jira</button>
@@ -319,6 +384,7 @@ function renderResultGherkin(r) {
         <span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)">${esc(cfg.projectKey || 'QA')} · ${esc(cfg.issueType || 'Bug')}</span>
       </div>
       <div class="res-body">${renderEditableGherkinBody(r)}</div>
+      ${renderLinkedItemsBlock(r, 'report')}
       <div class="res-actions">
         <button class="btn btn-ghost btn-sm" onclick="copyReport()">📋 Copy</button>
         <button class="btn btn-ghost btn-sm" onclick="pushToJira()">🚀 Push to Jira</button>

@@ -4,12 +4,18 @@
 const DEFAULTS = {
   projectName: '', projectKey: 'QA', issueType: 'Bug',
   jiraUrl: '', jiraEmail: '', jiraToken: '', proxyUrl: '',
+  openRouterModel: 'anthropic/claude-sonnet-4.5',
   template: '', templateLink: '',
   // Verbatim Environment block reused for every report. Auto-filled by
   // Analyze Template / fetchTemplateFromLink, manually editable in Setup.
   // When non-empty, generate() injects this value AS-IS — no AI rewrite.
   defaultEnvironment: '',
   voiceExamples: { uk: '', en: '' },
+  // Structured sprint captured straight from the fetched template issue
+  // ({ id, name, state, fieldId }) — set by fetchTemplateFromLink, used by
+  // analyzeTemplate to force a VALID numeric sprint id into the Sprint
+  // custom field instead of trusting the AI to copy it correctly.
+  templateSprint: null,
   rules: [
     'Always include numbered steps to reproduce',
     'Separate expected vs actual behavior clearly',
@@ -44,7 +50,93 @@ const DEFAULTS = {
   // contextThreshold = similarity 0..1 required to accept a correction.
   contextWords:     [],
   contextThreshold: 0.85,
+  // ── Dictation mode (Setup → Dictation) ───────────────────────────────────
+  // false              → pure Web Speech API behaviour (instant live text).
+  // 'gpt4o-transcribe' → record clean audio, no live draft; OpenRouter
+  //                      GPT-4o Transcribe produces the text on Pause/Stop.
+  // Default is OFF because the GPT-4o mode needs an OpenRouter key — a fresh
+  // install must still produce text out of the box. Retired modes
+  // (true / 'stop' / 'live' / 'whisper-turbo') migrate to 'gpt4o-transcribe'.
+  voiceAiCleanup: false,
+  // ── Linked work items (Setup → Linked work items) ────────────────────────
+  // Project-default tickets every generated bug gets linked to. Auto-filled
+  // by Analyze Template (when the reference bug shows linked issues) and
+  // manually editable in Setup. Each entry:
+  //   { relation: 'relates to', key: 'FER-123', title: '…', url: 'https://…' }
+  // Every generated report receives a COPY of this list (editable per-report
+  // on the result card); Push to Jira then creates real issue links.
+  linkedWorkItems: [],
 };
+
+// ── linked work item relations ─────────────────────────────────────────────
+// How the NEW bug relates to the linked ticket. `jiraType` is the Jira
+// issue-link type name; `side` says which side of the link the NEW bug
+// occupies. Jira semantics: {inwardIssue: A, outwardIssue: B, type: T} reads
+// "A <T.inward> B" and "B <T.outward> A" — so when the new bug carries the
+// OUTWARD phrase (e.g. "blocks") it must be sent as outwardIssue, and when it
+// carries the INWARD phrase ("is blocked by") as inwardIssue.
+const LINKED_WORK_ITEM_RELATIONS = [
+  { label: 'relates to',       jiraType: 'Relates',          side: 'outward' },
+  { label: 'blocks',           jiraType: 'Blocks',           side: 'outward' },
+  { label: 'is blocked by',    jiraType: 'Blocks',           side: 'inward'  },
+  { label: 'duplicates',       jiraType: 'Duplicate',        side: 'outward' },
+  { label: 'is duplicated by', jiraType: 'Duplicate',        side: 'inward'  },
+  { label: 'causes',           jiraType: 'Problem/Incident', side: 'outward' },
+  { label: 'is caused by',     jiraType: 'Problem/Incident', side: 'inward'  },
+  { label: 'clones',           jiraType: 'Cloners',          side: 'outward' },
+  { label: 'is cloned by',     jiraType: 'Cloners',          side: 'inward'  },
+];
+const DEFAULT_LINK_RELATION = 'relates to';
+
+function normalizeLinkRelation(rel) {
+  const norm = String(rel || '').trim().toLowerCase();
+  const hit = LINKED_WORK_ITEM_RELATIONS.find(r => r.label === norm);
+  return hit ? hit.label : DEFAULT_LINK_RELATION;
+}
+
+// Pull "FER-123" out of free text or a .../browse/FER-123 URL. Uppercases
+// first so hand-typed "fer-123" works too. NOTE: named distinctly from
+// template.js's extractIssueKey (case-sensitive URL parser) — both are
+// global function declarations, so a shared name would silently collide.
+function extractLinkedIssueKey(s) {
+  const m = String(s || '').toUpperCase().match(/([A-Z][A-Z0-9_]+-\d+)/);
+  return m ? m[1] : '';
+}
+
+// Coerce any stored / AI-returned list into clean rows. Drops entries with
+// neither a key nor a URL; derives the key from the URL when only a URL was
+// given; keeps relation within the known list.
+function normalizeLinkedWorkItems(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(it => {
+    if (!it || typeof it !== 'object') return null;
+    const url = String(it.url || '').trim();
+    let key = extractLinkedIssueKey(it.key) || extractLinkedIssueKey(url);
+    return {
+      relation: normalizeLinkRelation(it.relation),
+      key,
+      title: String(it.title || '').trim(),
+      url,
+    };
+  }).filter(it => it && (it.key || it.url));
+}
+
+// Best browse URL for a linked item — explicit url wins, else derived from
+// the configured Jira base URL + key.
+function linkedItemUrl(item) {
+  if (!item) return '';
+  if (item.url) return item.url;
+  const base = (cfg.jiraUrl || '').trim().replace(/\/+$/, '');
+  return (item.key && base) ? `${base}/browse/${item.key}` : '';
+}
+
+// <option> list for relation dropdowns (Setup rows + result-card rows).
+function linkRelationOptionsHtml(selected) {
+  const sel = normalizeLinkRelation(selected);
+  return LINKED_WORK_ITEM_RELATIONS
+    .map(r => `<option value="${r.label}"${r.label === sel ? ' selected' : ''}>${r.label}</option>`)
+    .join('');
+}
 
 // ── state ─────────────────────────────────────────────────────────────────
 // Globals shared across all modules. They live in the script lexical scope

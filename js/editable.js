@@ -305,7 +305,7 @@ function renderEditableNormalBody(r, resultId) {
     ${cfHtml}`;
 }
 
-function renderEditableGherkinBody(r) {
+function renderEditableGherkinBody(r, resultId = 'report') {
   // AR / ER come in as multiline strings ("- bullet\n- bullet"); split
   // them into list items so the user can edit individual bullets.
   function splitBullets(s) {
@@ -360,3 +360,86 @@ function renderEditableGherkinBody(r) {
       : ''}
     ${cfHtml}`;
 }
+
+// ── Linked work items block (result cards) ─────────────────────────────────
+// Shared widget rendered inside every result card (Report page, Batch cards,
+// History items) showing which tickets the new bug will be linked to on
+// Push to Jira. Fully editable per report: add / edit / remove rows mutate
+// r.linkedWorkItems on the object resolved via data-result-id, so edits
+// persist exactly like the rest of the editable card (History auto-saves
+// through its resolver's onUpdate).
+function renderLinkedItemsBlock(r, resultId) {
+  const items = Array.isArray(r.linkedWorkItems) ? r.linkedWorkItems : [];
+  const rows = items.map((it, i) => {
+    const url = (typeof linkedItemUrl === 'function') ? linkedItemUrl(it) : (it.url || '');
+    const open = url
+      ? `<a class="lwi-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(url)}">↗</a>`
+      : `<span class="lwi-open" style="opacity:.25">↗</span>`;
+    return `<div class="lwi-row">
+      <select onchange="updateResultLinked('${esc(resultId)}', ${i}, 'relation', this.value)">${linkRelationOptionsHtml(it.relation)}</select>
+      <input type="text" value="${esc(it.key || '')}" placeholder="FER-123" oninput="updateResultLinked('${esc(resultId)}', ${i}, 'key', this.value)"/>
+      <input type="text" value="${esc(it.title || '')}" placeholder="Title (optional)" oninput="updateResultLinked('${esc(resultId)}', ${i}, 'title', this.value)"/>
+      ${open}
+      <button class="rule-del" onclick="removeResultLinked('${esc(resultId)}', ${i})" title="Remove">×</button>
+    </div>`;
+  }).join('');
+
+  return `<div class="linked-block" data-linked-block>
+    <div class="linked-block-head">
+      <span class="linked-block-title">🔗 Linked work items</span>
+      <span class="linked-block-count">${items.length ? items.length + ' · created on Push to Jira' : 'none'}</span>
+      <button class="btn btn-ghost btn-sm" onclick="addResultLinked('${esc(resultId)}')">+ Add</button>
+    </div>
+    ${rows || `<div class="linked-block-empty">No links — this bug will be created standalone. Defaults come from Setup → Linked work items.</div>`}
+  </div>`;
+}
+window.renderLinkedItemsBlock = renderLinkedItemsBlock;
+
+// Re-render JUST the linked block of one result card (used after add/remove;
+// per-keystroke edits intentionally skip re-render to keep input focus).
+function _refreshLinkedBlock(resultId) {
+  const target = resolveResultTarget(resultId);
+  if (!target || !target.obj) return;
+  const scopeEl = document.querySelector(`[data-result-id="${CSS.escape(resultId)}"]`);
+  const blockEl = scopeEl && scopeEl.querySelector('[data-linked-block]');
+  if (!blockEl) return;
+  blockEl.outerHTML = renderLinkedItemsBlock(target.obj, resultId);
+}
+
+function addResultLinked(resultId) {
+  const target = resolveResultTarget(resultId);
+  if (!target || !target.obj) return;
+  if (!Array.isArray(target.obj.linkedWorkItems)) target.obj.linkedWorkItems = [];
+  target.obj.linkedWorkItems.push({
+    relation: (typeof DEFAULT_LINK_RELATION !== 'undefined') ? DEFAULT_LINK_RELATION : 'relates to',
+    key: '', title: '', url: '',
+  });
+  if (target.onUpdate) target.onUpdate();
+  _refreshLinkedBlock(resultId);
+  // Focus the fresh key input so the user can type the ticket right away.
+  const scopeEl = document.querySelector(`[data-result-id="${CSS.escape(resultId)}"]`);
+  const rows = scopeEl ? scopeEl.querySelectorAll('[data-linked-block] .lwi-row input[placeholder="FER-123"]') : [];
+  if (rows.length) rows[rows.length - 1].focus();
+}
+window.addResultLinked = addResultLinked;
+
+function updateResultLinked(resultId, idx, field, value) {
+  const target = resolveResultTarget(resultId);
+  if (!target || !target.obj) return;
+  const it = Array.isArray(target.obj.linkedWorkItems) && target.obj.linkedWorkItems[idx];
+  if (!it) return;
+  if (field === 'relation') it.relation = (typeof normalizeLinkRelation === 'function') ? normalizeLinkRelation(value) : value;
+  else it[field] = String(value);
+  if (target.onUpdate) target.onUpdate();
+}
+window.updateResultLinked = updateResultLinked;
+
+function removeResultLinked(resultId, idx) {
+  const target = resolveResultTarget(resultId);
+  if (!target || !target.obj) return;
+  if (!Array.isArray(target.obj.linkedWorkItems)) return;
+  target.obj.linkedWorkItems.splice(idx, 1);
+  if (target.onUpdate) target.onUpdate();
+  _refreshLinkedBlock(resultId);
+}
+window.removeResultLinked = removeResultLinked;

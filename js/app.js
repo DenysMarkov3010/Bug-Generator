@@ -75,6 +75,31 @@ function migrateCfg() {
     changed = true;
   }
 
+  if (typeof cfg.openRouterModel !== 'string' || !cfg.openRouterModel.trim()) {
+    cfg.openRouterModel = DEFAULTS.openRouterModel;
+    changed = true;
+  }
+  // Retired AI dictation modes (legacy true/'stop', 'whisper-turbo', and the
+  // removed 'live' polish) collapse to 'gpt4o-transcribe' — users who had ANY
+  // AI mode on keep an AI mode. Unrecognized values fall back to the default.
+  if (cfg.voiceAiCleanup === true || cfg.voiceAiCleanup === 'stop' || cfg.voiceAiCleanup === 'whisper-turbo' || cfg.voiceAiCleanup === 'live') {
+    cfg.voiceAiCleanup = 'gpt4o-transcribe';
+    changed = true;
+  } else if (cfg.voiceAiCleanup !== false && cfg.voiceAiCleanup !== 'gpt4o-transcribe') {
+    cfg.voiceAiCleanup = DEFAULTS.voiceAiCleanup;
+    changed = true;
+  }
+  // Linked work items — backfill + normalize rows saved by older builds.
+  if (!Array.isArray(cfg.linkedWorkItems)) {
+    cfg.linkedWorkItems = [];
+    changed = true;
+  } else if (typeof normalizeLinkedWorkItems === 'function') {
+    const normalized = normalizeLinkedWorkItems(cfg.linkedWorkItems);
+    if (JSON.stringify(normalized) !== JSON.stringify(cfg.linkedWorkItems)) {
+      cfg.linkedWorkItems = normalized;
+      changed = true;
+    }
+  }
   // Context words glossary — new in this build. Backfill + drop any
   // legacy Whisper fields from older snapshots so cfg stays clean.
   if (!Array.isArray(cfg.contextWords)) {

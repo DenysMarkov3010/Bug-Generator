@@ -66,6 +66,54 @@ let committedFinal = '';   // accumulated finalized transcript across ALL sub-se
 let prevFrameFinal = '';   // last onresult's full final text — used for delta math
 let userStopped    = false;// true when user (not the browser) ended recognition
 
+// ── GPT-4o post-stop transcription ─────────────────────────────────────────
+// `cleanupSeq` invalidates an in-flight transcription when a newer recording
+// starts, so a slow response can never stomp fresher text.
+let cleanupSeq = 0;
+
+async function maybeTranscribeGpt4o(audioBlob) {
+  if (!audioBlob || !audioBlob.size) return;
+  if (!apiKey) return;
+  if (typeof transcribeWithGpt4o !== 'function') return;
+  const ta = document.getElementById('tin');
+  if (!ta) return;
+
+  const base = baseText;
+  const snapshot = ta.value;
+  const seq = ++cleanupSeq;
+  const st = document.getElementById('vSt');
+  const ht = document.getElementById('vHt');
+  if (st) st.textContent = 'Transcribing with GPT-4o…';
+  if (ht) ht.textContent = 'OpenRouter is transcribing the recorded audio — browser preview stays until it returns';
+
+  let transcribed = '';
+  try {
+    transcribed = await transcribeWithGpt4o(audioBlob, transcribeLanguageHint(lang));
+  } catch (e) {
+    try { toast('⚠ GPT-4o transcription failed — keeping browser transcript (' + e.message + ')'); } catch {}
+  }
+
+  if (seq === cleanupSeq && !isRec) {
+    if (st) st.textContent = 'Tap to dictate';
+    if (ht) ht.textContent = 'Ukrainian or English — report will always be in English';
+  }
+  transcribed = (typeof correctTranscript === 'function') ? correctTranscript(transcribed) : transcribed;
+  transcribed = String(transcribed || '').trim();
+  if (!transcribed || seq !== cleanupSeq || isRec) return;
+
+  const next = (base ? base + ' ' : '') + transcribed;
+  if (ta.value === snapshot) {
+    ta.value = next;
+    try { toast('✓ GPT-4o transcript applied'); } catch {}
+  } else {
+    const currentTail = (base && snapshot.startsWith(base)) ? snapshot.slice(base.length).trim() : snapshot.trim();
+    if (currentTail && ta.value.includes(currentTail)) {
+      ta.value = ta.value.replace(currentTail, transcribed);
+      try { toast('✓ GPT-4o transcript applied'); } catch {}
+    }
+  }
+}
+
 // ── background-tab awareness ──────────────────────────────────────────────
 // While dictation is active, we want the user to be able to monitor and
 // control recording even when they switch to another tab. We do four things:
@@ -250,6 +298,10 @@ let pipWindow         = null;
 let pipMode           = 'rec';   // 'rec' | 'edit'
 let pipPauseRequested = false;
 
+function normalizePipEditableText(s) {
+  return String(s || '').replace(/^[\s\u00a0]+/, '');
+}
+
 async function openPipController() {
   if (pipWindow) return;                                    // already open
   if (!('documentPictureInPicture' in window)) return;      // unsupported
@@ -331,6 +383,26 @@ async function openPipController() {
         box-shadow: 0 0 8px rgba(255, 94, 87, .55);
       }
       @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+      /* Siri-style equalizer shown in GPT-4o mode (no live transcript). Bars
+         grow symmetrically from the centre line, each with a colour along a
+         cyan→purple→pink gradient and a soft glow. Heights are driven by the
+         live mic level (updatePipEqLevel) with a per-bar wobble for a lively
+         flow — flat when silent, dancing when the user speaks. */
+      .pip-rec { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; }
+      .pip-eq { display: flex; align-items: center; justify-content: center; gap: 6px; height: 64px; }
+      .pip-eq span {
+        width: 7px; height: 4px; border-radius: 999px;
+        background: #a78bfa; box-shadow: 0 0 12px rgba(167,139,250,.5);
+        transition: height 80ms cubic-bezier(.4, 0, .2, 1);
+      }
+      .pip-eq span:nth-child(1) { background: #5ee7ff; box-shadow: 0 0 12px rgba(94,231,255,.5); }
+      .pip-eq span:nth-child(2) { background: #7cc4ff; box-shadow: 0 0 12px rgba(124,196,255,.5); }
+      .pip-eq span:nth-child(3) { background: #9aa7fb; box-shadow: 0 0 12px rgba(154,167,251,.5); }
+      .pip-eq span:nth-child(4) { background: #a78bfa; box-shadow: 0 0 12px rgba(167,139,250,.5); }
+      .pip-eq span:nth-child(5) { background: #c08bf0; box-shadow: 0 0 12px rgba(192,139,240,.5); }
+      .pip-eq span:nth-child(6) { background: #df7ddb; box-shadow: 0 0 12px rgba(223,125,219,.5); }
+      .pip-eq span:nth-child(7) { background: #f472b6; box-shadow: 0 0 12px rgba(244,114,182,.5); }
+      .pip-rec-label { font-size: 13px; color: var(--muted); font-style: normal; text-align: center; }
       .lang-pill {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 10px; color: var(--muted);
@@ -425,6 +497,18 @@ async function openPipController() {
         box-shadow: none;
         opacity: .4;
       }
+      .rec-dot.transcribing { animation: none; background: #60afff; box-shadow: 0 0 8px rgba(96,175,255,.55); }
+      /* Spinner shown on the Pause button (and in the body) while the dictated
+         chunk is being transcribed by GPT-4o after a Pause. */
+      .pip-spin {
+        display: inline-block; width: 13px; height: 13px;
+        border: 2px solid rgba(255,255,255,.25); border-top-color: #fff;
+        border-radius: 50%; animation: pipspin .7s linear infinite;
+        vertical-align: -2px;
+      }
+      .pip-spin-lg { width: 30px; height: 30px; border-width: 3px; border-top-color: #60afff; vertical-align: 0; }
+      @keyframes pipspin { to { transform: rotate(360deg); } }
+      .pause-btn:disabled, .stop-btn:disabled { cursor: default; opacity: .55; }
     `;
     doc.head.appendChild(style);
 
@@ -454,6 +538,9 @@ async function openPipController() {
       // Mark BEFORE stopRec so recog.onend knows to flip the window into
       // edit mode instead of closing it. stopRec lives in the parent window.
       pipPauseRequested = true;
+      // GPT-4o: Pause kicks off a transcription network call — surface a
+      // spinner immediately so the wait is obvious.
+      if (cfg.voiceAiCleanup === 'gpt4o-transcribe') showPipTranscribing();
       try { stopRec(); } catch {}
     });
 
@@ -469,7 +556,7 @@ async function openPipController() {
       // picks them up as baseText, then re-arm recognition. The PiP itself
       // stays open and we flip back to 'rec' mode.
       const body = doc.getElementById('pipBody');
-      if (body) document.getElementById('tin').value = body.innerText;
+      if (body) document.getElementById('tin').value = normalizePipEditableText(body.innerText);
       try { startRec(); } catch {}
     });
 
@@ -479,7 +566,7 @@ async function openPipController() {
       // but do it once more to be defensive against missed events) and
       // close the floating window for good.
       const body = doc.getElementById('pipBody');
-      if (body) document.getElementById('tin').value = body.innerText;
+      if (body) document.getElementById('tin').value = normalizePipEditableText(body.innerText);
       closePipController();
     });
 
@@ -489,7 +576,7 @@ async function openPipController() {
     doc.getElementById('pipBody').addEventListener('input', () => {
       if (pipMode !== 'edit') return;
       const body = doc.getElementById('pipBody');
-      document.getElementById('tin').value = body.innerText;
+      document.getElementById('tin').value = normalizePipEditableText(body.innerText);
     });
 
     // If the user closes the PiP window themselves (X button), null out
@@ -500,6 +587,12 @@ async function openPipController() {
       pipWindow = null;
       pipMode   = 'rec';
     });
+
+    // Now that the window actually exists, render the current (rec) mode so
+    // the GPT-4o recording visualizer appears IMMEDIATELY on open — the
+    // setPipMode('rec') call in startRec ran before requestWindow() resolved
+    // (pipWindow was still null), so it no-op'd.
+    setPipMode('rec');
 
   } catch (err) {
     // Most common failure: requestWindow called outside a user gesture
@@ -590,7 +683,7 @@ function setPipMode(mode) {
     // they started dictating AND the freshly transcribed text.
     body.classList.remove('empty');
     body.innerHTML = '';
-    body.textContent = document.getElementById('tin').value;
+    body.textContent = normalizePipEditableText(document.getElementById('tin').value);
     // plaintext-only is a Chromium feature; PiP is Chromium-only too,
     // so this is safe and gives us a textarea-like contenteditable
     // (no rich-text from pastes, Enter inserts a real newline).
@@ -627,8 +720,19 @@ function setPipMode(mode) {
     body.removeAttribute('contenteditable');
     body.classList.remove('editable');
 
-    const seed = (baseText || '').trim();
-    if (seed) {
+    const gpt4o = (cfg.voiceAiCleanup === 'gpt4o-transcribe');
+    const seed  = (baseText || '').trim();
+    if (gpt4o) {
+      // No live transcript in GPT-4o mode — show an animated equalizer so the
+      // window visibly conveys recording; the text lands here in edit mode
+      // once the user Pauses or Stops.
+      body.classList.add('empty');
+      body.innerHTML =
+        '<div class="pip-rec">' +
+          eqBarsMarkup('pipEq') +
+          '<div class="pip-rec-label">Recording — text appears when you Pause or Stop</div>' +
+        '</div>';
+    } else if (seed) {
       const esc = s => String(s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       body.classList.remove('empty');
@@ -643,9 +747,512 @@ function setPipMode(mode) {
     stopBtn.style.display   = 'flex';
     resumeBtn.style.display = 'none';
     doneBtn.style.display   = 'none';
+    // Clear any leftover "transcribing" spinner state from a previous Pause.
+    pauseBtn.disabled = false; pauseBtn.innerHTML = '⏸ Pause';
+    stopBtn.disabled  = false; stopBtn.style.opacity = '';
 
-    if (dot)   dot.classList.remove('paused');
-    if (label) label.textContent = 'Recording — live transcript below';
+    if (dot)   dot.classList.remove('paused', 'transcribing');
+    if (label) label.textContent = gpt4o ? 'Recording — transcribes on Pause / Stop' : 'Recording — live transcript below';
+  }
+}
+
+// Put the floating window into a "transcribing" state the moment GPT-4o Pause
+// is tapped: a spinner on the Pause button + a spinner in the body, so the
+// (1–3s) network transcription is obviously in progress. Cleared when the
+// result arrives and setPipMode('edit') / ('rec') runs.
+function showPipTranscribing() {
+  if (!pipWindow) return;
+  const doc      = pipWindow.document;
+  const pauseBtn = doc.getElementById('pipPauseBtn');
+  const stopBtn  = doc.getElementById('pipStopBtn');
+  const label    = doc.getElementById('pipHeadLabel');
+  const dot      = doc.getElementById('pipRecDot');
+  const body     = doc.getElementById('pipBody');
+  if (pauseBtn) { pauseBtn.disabled = true; pauseBtn.innerHTML = '<span class="pip-spin"></span> Transcribing…'; }
+  if (stopBtn)  { stopBtn.disabled = true; }
+  if (label)    label.textContent = 'Transcribing with GPT-4o…';
+  if (dot)      { dot.classList.remove('paused'); dot.classList.add('transcribing'); }
+  if (body)     {
+    body.classList.add('empty');
+    body.innerHTML =
+      '<div class="pip-rec"><span class="pip-spin pip-spin-lg"></span>' +
+      '<div class="pip-rec-label">Transcribing with GPT-4o…</div></div>';
+  }
+}
+
+// ── microphone keep-alive + level meter ───────────────────────────────────
+// Web Speech API exposes NO sensitivity / gain controls — audio goes from
+// the OS input device straight into the browser's recognizer and there is
+// no JS knob for it. What we CAN do about "it doesn't hear my words":
+//   1. Hold a parallel getUserMedia stream for the whole recording. Without
+//      it the input device is re-acquired on EVERY internal auto-restart
+//      (Chrome ends a session after a few seconds of silence — see onend).
+//      With Bluetooth headsets that re-acquisition includes an audio-profile
+//      switch, during which the first words after a pause are simply lost.
+//      A held stream keeps the device open, so restarts resume instantly.
+//   2. Drive a live input-level meter from that stream and show the name of
+//      the device the browser actually picked. If the bar doesn't move
+//      while you speak, the OS routed the wrong mic (e.g. laptop built-in
+//      instead of the headset) or its level is near zero — otherwise
+//      indistinguishable from "the recognizer ignored me".
+// Both are best-effort: if getUserMedia fails, recognition works as before.
+let micStream = null;
+let micCtx    = null;
+let micTimer  = 0;
+// GPT-4o Transcribe audio capture (see createAudioSession). Batch cards hold
+// their own session per card; this slot belongs to the Single-Report mic.
+let audioSession = null;
+
+// ── recognizer liveness watchdog ──────────────────────────────────────────
+// Chrome's continuous SpeechRecognition is flaky: after a silence it fires
+// `onend`, and the naive "call recog.start() again" sometimes resurrects a
+// FROZEN session — start() succeeds and onstart fires, but no `onresult`
+// ever comes. The level meter keeps moving (it runs off our own
+// getUserMedia stream, not the recognizer), so the user sees "audio is
+// flowing but no text appears". We defeat this with two mechanisms:
+//   1. On every restart we build a FRESH recognizer (createRecognizer)
+//      instead of reusing the dead object — a reused instance is what tends
+//      to freeze.
+//   2. A watchdog cross-checks the audio meter against transcription
+//      progress: if sound is arriving (lastLoudAt recent) but no result has
+//      landed for a few seconds (lastResultAt stale), the session is frozen
+//      and we force a fresh restart.
+let lastResultAt = 0;   // Date.now() of the last onstart/onresult
+let lastLoudAt   = 0;   // Date.now() of the last above-threshold audio frame
+let recogWatchdog = 0;  // setInterval handle
+let restartTimer  = 0;  // debounce handle for scheduleRestart
+
+async function acquireMicStream() {
+  if (micStream) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch { return; }
+
+  // Fresh recording → start the equalizer from rest (drop any residual level
+  // and reset the wobble phase).
+  eqLevel = 0; eqFrame = 0;
+
+  // Two level bars share this loop: #vLive on the Single Report voice area
+  // and #sLive at the top of the Batch tab. Both exist in the DOM at all
+  // times; only the visible sub-tab's bar is actually seen.
+  ['vLive', 'sLive'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'flex';
+  });
+
+  try {
+    micCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = micCtx.createAnalyser();
+    analyser.fftSize = 512;
+    micCtx.createMediaStreamSource(micStream).connect(analyser);
+    const buf   = new Uint8Array(analyser.fftSize);
+    const fills = ['vMeterFill', 'sMeterFill']
+      .map(id => document.getElementById(id))
+      .filter(Boolean);
+    // setInterval, NOT requestAnimationFrame: rAF freezes in background
+    // tabs, and monitoring the mic from another tab (PiP open) is exactly
+    // when the user needs the meter alive.
+    micTimer = setInterval(() => {
+      if (!micStream) return;
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const d = (buf[i] - 128) / 128;
+        sum += d * d;
+      }
+      const rms = Math.sqrt(sum / buf.length);
+      // ~0.3 RMS is already loud speech — scale so normal voice fills most
+      // of the bar and quiet-but-audible speech is clearly visible.
+      const pct = Math.min(100, Math.round(rms * 300)) + '%';
+      fills.forEach(f => { f.style.width = pct; });
+      // Drive the GPT-4o recording equalizer in the floating window(s) from the
+      // same live level so the bars only come alive when the user speaks.
+      updatePipEqLevel(rms);
+      // Liveness signal for the recognizer watchdog: remember when we last
+      // heard real audio (above background noise). 0.045 sits just above
+      // typical room hiss and below quiet speech.
+      if (rms > 0.045) lastLoudAt = Date.now();
+    }, 70);   // 70ms ≈ 14fps — smooth enough for the bars without churn
+  } catch {} // meter is optional — keep-alive still holds the device
+}
+
+// ── Siri-style equalizer (GPT-4o recording visualizer) ────────────────────
+// A small set of centre-anchored bars that grow with the live mic level. Each
+// bar also carries a per-bar, time-varying "wobble" so the row dances like
+// Siri instead of moving as one rigid block. Amplitude comes purely from the
+// (smoothed) voice level, so the bars sit flat when silent and come alive only
+// when the user speaks.
+const EQ_BARS    = 7;
+// Centre bars taller than the edges (classic Siri silhouette).
+const EQ_WEIGHTS = [0.5, 0.72, 0.9, 1, 0.9, 0.72, 0.5];
+let eqLevel = 0;   // smoothed 0..1 level
+let eqFrame = 0;   // tick counter driving the wobble (NOT Date.now — stable)
+
+// Markup helper shared by the Single PiP ('pipEq') and the Batch PiP ('spipEq')
+// so the bar count always matches EQ_BARS.
+function eqBarsMarkup(id) {
+  return '<div class="pip-eq" id="' + id + '">' + '<span></span>'.repeat(EQ_BARS) + '</div>';
+}
+
+// Feed the live mic level (RMS, ~0..0.4 for speech) into the equalizer and
+// repaint the bars in whichever floating window is open. No-op outside GPT-4o
+// mode.
+//
+// Sensitivity: raw RMS of normal speech sits around 0.03–0.15, which a linear
+// scale renders as barely-moving bars. We gate out room hiss, then apply a
+// square-root curve so QUIET speech is already clearly visible, and use
+// VU-meter ballistics — fast attack (bars jump up the instant you speak),
+// slower decay (they fall back smoothly) — so the equalizer visibly reacts
+// to every word.
+function updatePipEqLevel(rms) {
+  if (cfg.voiceAiCleanup !== 'gpt4o-transcribe') return;
+  const gated = Math.max(0, rms - 0.006);          // ignore background hiss
+  const lvl   = Math.min(1, Math.sqrt(gated * 9)); // 0.03 rms → ~0.47, 0.12 → ~1
+  eqLevel = lvl > eqLevel
+    ? eqLevel * 0.30 + lvl * 0.70                  // fast attack
+    : eqLevel * 0.80 + lvl * 0.20;                 // slow, smooth decay
+  eqFrame++;
+  const heights = new Array(EQ_BARS);
+  for (let i = 0; i < EQ_BARS; i++) {
+    // Shallow, slow wobble → fluid Siri-like flow that keeps the centre-
+    // weighted silhouette readable instead of jittering bar-to-bar. The
+    // floor sits high (0.56) so the wobble adds life without eating the
+    // perceived loudness.
+    const wobble = 0.78 + 0.22 * Math.sin(eqFrame * 0.42 + i * 0.9);
+    heights[i] = 4 + Math.round(eqLevel * EQ_WEIGHTS[i] * wobble * 44);   // 4..48 px
+  }
+  const paint = (winDoc, id) => {
+    try {
+      const wrap = winDoc && winDoc.getElementById(id);
+      if (!wrap) return;
+      const bars = wrap.children;
+      for (let i = 0; i < bars.length && i < EQ_BARS; i++) bars[i].style.height = heights[i] + 'px';
+    } catch {}
+  };
+  if (pipWindow && pipMode === 'rec') paint(pipWindow.document, 'pipEq');
+  if (typeof sessionPip !== 'undefined' && sessionPip) paint(sessionPip.document, 'spipEq');
+}
+
+function releaseMicStream() {
+  stopRecogWatchdog();
+  if (micTimer) { clearInterval(micTimer); micTimer = 0; }
+  if (micStream) {
+    try { micStream.getTracks().forEach(t => t.stop()); } catch {}
+    micStream = null;
+  }
+  if (micCtx) { try { micCtx.close(); } catch {} micCtx = null; }
+  ['vLive', 'sLive'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  ['vMeterFill', 'sMeterFill'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.width = '0%';
+  });
+}
+
+// Build a fresh SpeechRecognition with all handlers wired. Used both for the
+// initial start and for every auto-restart — a brand-new instance avoids
+// Chrome's frozen-session bug that a reused object falls into. All handlers
+// read module-level state only, so the fresh instance behaves identically.
+function createRecognizer() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const r = new SR();
+  r.lang = lang;
+  r.continuous = true;
+  r.interimResults = true;
+  r.onstart   = onRecogStart;
+  r.onresult  = onRecogResult;
+  r.onend     = onRecogEnd;
+  r.onerror   = onRecogError;
+  return r;
+}
+
+// Debounced, fresh-instance restart. Discards the old (possibly frozen)
+// recognizer — silencing its handlers first so its abort-triggered onend
+// can't recursively schedule another restart — then starts a new one.
+function scheduleRestart(delay) {
+  if (restartTimer) return;                 // a restart is already pending
+  restartTimer = setTimeout(() => {
+    restartTimer = 0;
+    if (userStopped || !isRec) return;
+    prevFrameFinal = '';                     // next frame is a clean append
+    if (recog) {
+      try { recog.onend = null; recog.onerror = null; recog.onresult = null; recog.abort(); } catch {}
+    }
+    try {
+      recog = createRecognizer();
+      if (recog) recog.start();
+      // Give the fresh session a grace window before the watchdog can judge
+      // it dead.
+      lastResultAt = Date.now();
+    } catch {
+      // start() throws if Chrome is still tearing the old session down —
+      // back off and try again shortly.
+      scheduleRestart(500);
+    }
+  }, delay == null ? 250 : delay);
+}
+
+function startRecogWatchdog() {
+  if (recogWatchdog) return;
+  lastResultAt = Date.now();
+  recogWatchdog = setInterval(() => {
+    if (!isRec || userStopped) return;
+    const now = Date.now();
+    // Audio is arriving right now but nothing has been transcribed for a
+    // while → the recognizer froze. Force a fresh restart.
+    if (now - lastLoudAt < 1500 && now - lastResultAt > 3500) {
+      lastResultAt = now;                    // avoid thrashing while it recovers
+      try { document.getElementById('vHt').textContent = 'Reconnecting the recognizer…'; } catch {}
+      scheduleRestart(0);
+    }
+  }, 1200);
+}
+
+function stopRecogWatchdog() {
+  if (recogWatchdog) { clearInterval(recogWatchdog); recogWatchdog = 0; }
+  if (restartTimer)  { clearTimeout(restartTimer);   restartTimer  = 0; }
+}
+
+function gpt4oTranscribeEnabled() {
+  return cfg.voiceAiCleanup === 'gpt4o-transcribe';
+}
+
+function transcribeLanguageHint(recLang) {
+  return String(recLang || '').toLowerCase().startsWith('uk') ? 'uk'
+    : String(recLang || '').toLowerCase().startsWith('en') ? 'en'
+      : '';
+}
+
+// Create an INDEPENDENT audio-recording session on the held mic stream.
+// Each session owns its MediaRecorder and chunk buffer in a closure, so
+// overlapping recordings can't clobber each other — critical for the Batch
+// "+ Add bug" flow, where card N's audio is still being finalized while
+// card N+1 already records (multiple MediaRecorders on one MediaStream are
+// allowed). Returns { stop({discard}) → Promise<Blob|null> } or null.
+function createAudioSession() {
+  if (!gpt4oTranscribeEnabled() || !micStream || typeof MediaRecorder === 'undefined') return null;
+  try {
+    const preferred = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+    ].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
+    const chunks = [];
+    const rec = preferred ? new MediaRecorder(micStream, { mimeType: preferred }) : new MediaRecorder(micStream);
+    rec.ondataavailable = e => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+    rec.start();
+    return {
+      stop(opts) {
+        const discard = opts && opts.discard;
+        return new Promise(resolve => {
+          const type = rec.mimeType || 'audio/webm';
+          const finish = () => {
+            if (discard || !chunks.length) { resolve(null); return; }
+            resolve(new Blob(chunks, { type }));
+          };
+          try {
+            rec.onstop = finish;
+            if (rec.state === 'inactive') finish();
+            else rec.stop();
+          } catch {
+            finish();
+          }
+        });
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Single-Report mic keeps the simple start/stop pair — it never overlaps
+// with itself, so one module-level "current session" is enough.
+function startTranscribeRecording() {
+  audioSession = createAudioSession();
+}
+
+function stopTranscribeRecording(opts) {
+  const s = audioSession;
+  audioSession = null;
+  return s ? s.stop(opts || {}) : Promise.resolve(null);
+}
+
+// ── recognizer event handlers (module-level so createRecognizer can wire a
+//    fresh instance on every restart) ──────────────────────────────────────
+function onRecogStart() {
+  lastResultAt = Date.now();
+  isRec = true;
+  document.getElementById('micBtn').classList.add('rec');
+  // GPT-4o Transcribe records cleanly and reveals text only on Pause/Stop —
+  // so the status reflects "recording" rather than "live transcribing".
+  const gpt4o = (cfg.voiceAiCleanup === 'gpt4o-transcribe');
+  document.getElementById('vSt').textContent = gpt4o ? '🔴 Recording…' : 'Listening…';
+  document.getElementById('vHt').textContent = gpt4o
+    ? 'Speak freely — GPT-4o transcribes your audio when you Pause or Stop'
+    : 'Tap again to stop · floating Stop button on your desktop works from any tab';
+  document.getElementById('vHt').classList.add('rec');
+  setRecordingBadges(true);
+  // If the user started recording while the tab was already in the
+  // background (unlikely but possible via keyboard shortcut), surface
+  // the notification immediately so they know it's running.
+  if (document.hidden) showRecordingNotification();
+}
+
+function onRecogResult(e) {
+  lastResultAt = Date.now();   // liveness ping for the watchdog
+  // GPT-4o Transcribe mode shows NO live draft: the recorder captures clean
+  // audio and the polished text appears only after Pause/Stop (ChatGPT-style).
+  // We still let Web Speech run (it drives the start/stop lifecycle) but drop
+  // its low-quality interim text so nothing jumpy lands in the textarea.
+  if (cfg.voiceAiCleanup === 'gpt4o-transcribe') return;
+  // Re-collect the full state of this frame (Chrome may give us several
+  // result entries — some final, some interim). We stitch them, then
+  // diff against the previous frame to figure out what's new.
+  let frameFinal   = '';
+  let frameInterim = '';
+  for (let i = 0; i < e.results.length; i++) {
+    const r = e.results[i];
+    if (r.isFinal) {
+      frameFinal += (frameFinal ? ' ' : '') + r[0].transcript.trim();
+    } else {
+      frameInterim += r[0].transcript;
+    }
+  }
+
+  let delta;
+  if (frameFinal.startsWith(prevFrameFinal)) {
+    // Normal case: Chrome accumulated on top of the previous frame.
+    delta = frameFinal.slice(prevFrameFinal.length).trim();
+  } else {
+    // Reset case: Chrome wiped its internal buffer mid-session (happens
+    // after silence). Commit what the previous frame held, then treat
+    // the whole new frame as a fresh chunk.
+    if (prevFrameFinal) {
+      committedFinal = (committedFinal + ' ' + prevFrameFinal).trim();
+    }
+    delta = frameFinal.trim();
+  }
+  if (delta) {
+    committedFinal = (committedFinal + ' ' + delta).trim();
+  }
+  prevFrameFinal = frameFinal;
+
+  // Apply the Context-words glossary to the LIVE transcript so unique
+  // terms the recognizer mis-hears (e.g. "OTP" → "OTB Calendar") get
+  // rewritten to their exact spelling AS you speak — for both the
+  // finalized text and the in-progress interim phrase. We correct the
+  // whole committed string each frame (not per-chunk) so multi-word
+  // phrases split across recognition frames still match.
+  const committedShown = (typeof correctTranscript === 'function')
+    ? correctTranscript(committedFinal) : committedFinal;
+  const interimShown = (typeof correctTranscript === 'function')
+    ? correctTranscript(frameInterim.trim()) : frameInterim.trim();
+
+  // Render: pre-existing textarea content + everything dictated so far +
+  // the current interim guess (which will solidify into committedFinal
+  // on the next isFinal callback).
+  const parts = [];
+  if (baseText)       parts.push(baseText);
+  if (committedShown) parts.push(committedShown);
+  if (interimShown)   parts.push(interimShown);
+  document.getElementById('tin').value = parts.join(' ');
+
+  // Mirror what we just dictated into the floating PiP controller (if
+  // any) so the user can read the live transcript from another tab.
+  updatePipTranscript(committedShown, interimShown);
+}
+
+function onRecogEnd() {
+  if (!userStopped) {
+    // Pause-induced session end. Auto-restart with a FRESH recognizer
+    // (scheduleRestart) so the user perceives recognition as continuous;
+    // reusing this ended instance is what triggers Chrome's frozen-session
+    // bug. committedFinal stays intact; scheduleRestart clears prevFrameFinal
+    // so the next session's first onresult is a clean append.
+    scheduleRestart();
+    return;
+  }
+
+  // Real stop — hand off to the shared teardown.
+  teardownAfterStop();
+}
+
+// Final cleanup for a real stop: reset the UI, release the mic, and fire the
+// post-stop transcription/polish. Idempotent (guards on isRec) so it's safe
+// to call from BOTH onRecogEnd and stopRec's fallback path.
+function teardownAfterStop() {
+  if (!isRec) return;
+  isRec = false;
+  document.getElementById('micBtn').classList.remove('rec');
+  document.getElementById('vSt').textContent = 'Tap to dictate';
+  document.getElementById('vHt').textContent = 'Ukrainian or English — report will always be in English';
+  document.getElementById('vHt').classList.remove('rec');
+  setRecordingBadges(false);
+  closeRecordingNotification();
+
+  // If the user paused via the PiP Pause button, keep the floating
+  // window open and switch it into edit mode so they can fix the
+  // transcript right there. Any other stop path (PiP Stop, main mic
+  // button, page navigation) closes the PiP as before.
+  if (pipPauseRequested && pipWindow) {
+    pipPauseRequested = false;
+    if (cfg.voiceAiCleanup === 'gpt4o-transcribe') {
+      // GPT-4o mode: transcribe the audio captured up to this Pause and write
+      // it into the textarea FIRST, then flip to edit mode (which seeds the
+      // PiP body from the textarea) so the user sees the result. Resume then
+      // records a fresh chunk that appends after it.
+      stopTranscribeRecording().then(audioBlob => {
+        releaseMicStream();
+        Promise.resolve(maybeTranscribeGpt4o(audioBlob)).finally(() => setPipMode('edit'));
+      });
+    } else {
+      stopTranscribeRecording({ discard: true }).then(() => releaseMicStream());
+      setPipMode('edit');
+    }
+  } else {
+    closePipController();
+    stopTranscribeRecording().then(audioBlob => {
+      releaseMicStream();
+      if (cfg.voiceAiCleanup === 'gpt4o-transcribe') maybeTranscribeGpt4o(audioBlob);
+    });
+  }
+}
+
+function onRecogError(e) {
+  // `no-speech` is a benign error fired during long silences. If the
+  // user hasn't tapped stop, let onend handle it (which will auto-
+  // restart). Same for `aborted` triggered by the internal restart cycle.
+  if ((e.error === 'no-speech' || e.error === 'aborted') && !userStopped) {
+    return;
+  }
+
+  // Anything else is a real failure — surface it and stop for good.
+  // Drop pipPauseRequested so the onend cleanup path closes the window
+  // instead of stranding the user in an edit-mode PiP after an error.
+  userStopped       = true;
+  pipPauseRequested = false;
+  isRec = false;
+  stopTranscribeRecording({ discard: true }).then(() => releaseMicStream());
+  document.getElementById('micBtn').classList.remove('rec');
+  setRecordingBadges(false);
+  closeRecordingNotification();
+  closePipController();
+  const msg = describeRecogError(e.error);
+  if (msg) {
+    document.getElementById('vSt').textContent = 'Tap to dictate';
+    document.getElementById('vHt').textContent = msg;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      try { toast('⚠ ' + msg); } catch {}
+    }
   }
 }
 
@@ -654,11 +1261,15 @@ function startRec() {
   if (!SR) return;
 
   // Reset accumulators — this tap starts a fresh recording from scratch.
+  // Bumping cleanupSeq invalidates any in-flight GPT-4o transcription from
+  // the previous recording so its late response can't overwrite this one.
   baseText          = document.getElementById('tin').value;
   committedFinal    = '';
   prevFrameFinal    = '';
   userStopped       = false;
   pipPauseRequested = false;
+  cleanupSeq++;
+  lastLoudAt        = 0;
 
   // Lazily ask for notification permission so we can ping the user if
   // they switch tabs while recording. Fire-and-forget — if they deny,
@@ -666,152 +1277,15 @@ function startRec() {
   ensureNotificationPermission();
   ensureVisibilityHook();
 
-  recog = new SR();
-  recog.lang = lang;
-  recog.continuous = true;
-  recog.interimResults = true;
-
-  recog.onstart = () => {
-    isRec = true;
-    document.getElementById('micBtn').classList.add('rec');
-    document.getElementById('vSt').textContent = 'Listening…';
-    document.getElementById('vHt').textContent = 'Tap again to stop · floating Stop button on your desktop works from any tab';
-    document.getElementById('vHt').classList.add('rec');
-    setRecordingBadges(true);
-    // If the user started recording while the tab was already in the
-    // background (unlikely but possible via keyboard shortcut), surface
-    // the notification immediately so they know it's running.
-    if (document.hidden) showRecordingNotification();
-  };
-
-  recog.onresult = e => {
-    // Re-collect the full state of this frame (Chrome may give us several
-    // result entries — some final, some interim). We stitch them, then
-    // diff against the previous frame to figure out what's new.
-    let frameFinal   = '';
-    let frameInterim = '';
-    for (let i = 0; i < e.results.length; i++) {
-      const r = e.results[i];
-      if (r.isFinal) {
-        frameFinal += (frameFinal ? ' ' : '') + r[0].transcript.trim();
-      } else {
-        frameInterim += r[0].transcript;
-      }
-    }
-
-    let delta;
-    if (frameFinal.startsWith(prevFrameFinal)) {
-      // Normal case: Chrome accumulated on top of the previous frame.
-      delta = frameFinal.slice(prevFrameFinal.length).trim();
-    } else {
-      // Reset case: Chrome wiped its internal buffer mid-session (happens
-      // after silence). Commit what the previous frame held, then treat
-      // the whole new frame as a fresh chunk.
-      if (prevFrameFinal) {
-        committedFinal = (committedFinal + ' ' + prevFrameFinal).trim();
-      }
-      delta = frameFinal.trim();
-    }
-    if (delta) {
-      committedFinal = (committedFinal + ' ' + delta).trim();
-    }
-    prevFrameFinal = frameFinal;
-
-    // Apply the Context-words glossary to the LIVE transcript so unique
-    // terms the recognizer mis-hears (e.g. "OTP" → "OTB Calendar") get
-    // rewritten to their exact spelling AS you speak — for both the
-    // finalized text and the in-progress interim phrase. We correct the
-    // whole committed string each frame (not per-chunk) so multi-word
-    // phrases split across recognition frames still match.
-    const committedShown = (typeof correctTranscript === 'function')
-      ? correctTranscript(committedFinal) : committedFinal;
-    const interimShown = (typeof correctTranscript === 'function')
-      ? correctTranscript(frameInterim.trim()) : frameInterim.trim();
-
-    // Render: pre-existing textarea content + everything dictated so far +
-    // the current interim guess (which will solidify into committedFinal
-    // on the next isFinal callback).
-    const parts = [];
-    if (baseText)       parts.push(baseText);
-    if (committedShown) parts.push(committedShown);
-    if (interimShown)   parts.push(interimShown);
-    document.getElementById('tin').value = parts.join(' ');
-
-    // Mirror what we just dictated into the floating PiP controller (if
-    // any) so the user can read the live transcript from another tab.
-    // updatePipTranscript itself prepends baseText so on Resume the user
-    // sees their previous text and the new dictation flowing onto it.
-    updatePipTranscript(committedShown, interimShown);
-  };
-
-  recog.onend = () => {
-    if (!userStopped) {
-      // Pause-induced session end. Auto-restart so the user perceives
-      // recognition as truly continuous. committedFinal stays intact;
-      // we clear prevFrameFinal so the next session's first onresult
-      // is treated as a clean append (its startsWith('') is always true,
-      // so its full content lands in delta unchanged).
-      prevFrameFinal = '';
-      try {
-        recog.start();
-        return;
-      } catch {
-        // Chrome rate-limits start() (must be at least ~250ms apart),
-        // or recognition is in a stuck state — fall through and stop.
-      }
-    }
-
-    // Real stop — clean up UI.
-    isRec = false;
-    document.getElementById('micBtn').classList.remove('rec');
-    document.getElementById('vSt').textContent = 'Tap to dictate';
-    document.getElementById('vHt').textContent = 'Ukrainian or English — report will always be in English';
-    document.getElementById('vHt').classList.remove('rec');
-    setRecordingBadges(false);
-    closeRecordingNotification();
-
-    // If the user paused via the PiP Pause button, keep the floating
-    // window open and switch it into edit mode so they can fix the
-    // transcript right there. Any other stop path (PiP Stop, main mic
-    // button, page navigation) closes the PiP as before.
-    if (pipPauseRequested && pipWindow) {
-      pipPauseRequested = false;
-      setPipMode('edit');
-    } else {
-      closePipController();
-    }
-  };
-
-  recog.onerror = e => {
-    // `no-speech` is a benign error fired during long silences. If the
-    // user hasn't tapped stop, let onend handle it (which will auto-
-    // restart). Same for `aborted` triggered by the internal restart cycle.
-    if ((e.error === 'no-speech' || e.error === 'aborted') && !userStopped) {
-      return;
-    }
-
-    // Anything else is a real failure — surface it and stop for good.
-    // Drop pipPauseRequested so the onend cleanup path closes the window
-    // instead of stranding the user in an edit-mode PiP after an error.
-    userStopped       = true;
-    pipPauseRequested = false;
-    isRec = false;
-    document.getElementById('micBtn').classList.remove('rec');
-    setRecordingBadges(false);
-    closeRecordingNotification();
-    closePipController();
-    const msg = describeRecogError(e.error);
-    if (msg) {
-      document.getElementById('vSt').textContent = 'Tap to dictate';
-      document.getElementById('vHt').textContent = msg;
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        try { toast('⚠ ' + msg); } catch {}
-      }
-    }
-  };
+  recog = createRecognizer();
+  if (!recog) return;
 
   try {
     recog.start();
+    // Keep the input device open for the whole recording (feeds the level
+    // meter and the recognizer watchdog). Fire-and-forget.
+    acquireMicStream().then(() => startTranscribeRecording());
+    startRecogWatchdog();
     // Open the floating Picture-in-Picture controller SYNCHRONOUSLY in
     // the same call stack as the user gesture (mic tap). requestWindow()
     // needs that live activation — if we move it into onstart we lose it.
@@ -832,9 +1306,17 @@ function stopRec() {
   // Mark BEFORE calling stop() — the resulting onend must see userStopped=true
   // so it doesn't auto-restart us right after we asked to halt.
   userStopped = true;
+  // If a restart was queued, the current recog instance has already ended and
+  // won't fire another onend — so the normal stop-cleanup path wouldn't run.
+  // Detect that and finalize directly. Read the flag BEFORE clearing it.
+  const hadPendingRestart = !!restartTimer;
+  // Cancel any pending watchdog restart immediately so it can't fire a fresh
+  // session after the user asked to halt.
+  stopRecogWatchdog();
   if (recog) {
     try { recog.stop(); } catch {}
   }
+  if (hadPendingRestart) teardownAfterStop();
 }
 
 // Inline hint shown under the mic button when running via file://.

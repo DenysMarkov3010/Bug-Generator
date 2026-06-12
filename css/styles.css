@@ -72,7 +72,10 @@ textarea::placeholder,input::placeholder{color:var(--dim)}
 .btn-accent:disabled{opacity:.3;cursor:not-allowed}
 .btn-sm{padding:6px 10px;font-size:12px}
 .btn-row{display:flex;gap:8px;margin-top:1.4rem;flex-wrap:wrap}
-.voice-area{display:flex;align-items:center;gap:1.1rem;padding:1.1rem;background:var(--surface2);border-radius:var(--r);border:0.5px solid var(--border);margin-bottom:1rem}
+/* align-items:flex-start anchors the mic and the УК/EN toggle to the top so
+   they DON'T shift when the live level-meter row appears/disappears under the
+   status text while recording. */
+.voice-area{display:flex;align-items:flex-start;gap:1.1rem;padding:1.1rem;background:var(--surface2);border-radius:var(--r);border:0.5px solid var(--border);margin-bottom:1rem}
 .mic-btn{width:54px;height:54px;border-radius:50%;border:1.5px solid var(--border-md);background:var(--surface3);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:22px;transition:all .2s;flex-shrink:0}
 .mic-btn:hover{border-color:var(--accent);background:var(--accent-dim)}
 .mic-btn.rec{border-color:var(--red);background:var(--red-dim);animation:pulse 1.1s ease-in-out infinite}
@@ -81,6 +84,12 @@ textarea::placeholder,input::placeholder{color:var(--dim)}
 .v-status{font-size:13px;font-weight:500;margin-bottom:3px}
 .v-hint{font-size:12px;color:var(--muted)}
 .v-hint.rec{color:var(--red)}
+/* Live mic feedback shown while recording: input level bar.
+   The bar answers "does the browser hear me AT ALL?" — if it doesn't move
+   while you speak, the wrong device or a muted mic is selected in the OS. */
+.v-live{display:flex;align-items:center;gap:8px;margin-top:8px}
+.v-meter{width:160px;height:5px;background:var(--surface3);border-radius:999px;overflow:hidden;flex-shrink:0}
+.v-meter-fill{height:100%;width:0%;background:var(--accent);border-radius:999px;transition:width 90ms linear}
 .lang-toggle{display:flex;gap:3px;background:var(--surface3);border-radius:999px;padding:3px;flex-shrink:0}
 .lang-btn{background:none;border:none;border-radius:999px;padding:4px 12px;font-size:12px;font-family:'IBM Plex Mono',monospace;color:var(--muted);cursor:pointer;transition:all .15s}
 .lang-btn.active{background:var(--accent);color:var(--accent-ink);font-weight:500}
@@ -186,3 +195,17 @@ textarea::placeholder,input::placeholder{color:var(--dim)}
 .ctx-del:hover{border-color:#ff6b6b;color:#ff6b6b}
 
 @media(max-width:580px){.sidebar{display:none}.page{padding:1.2rem}.rg2{grid-template-columns:1fr}.af-grid{grid-template-columns:1fr 1fr}.fb-row{grid-template-columns:1fr 1fr}.fb-type{display:none}.ctx-row{grid-template-columns:1fr 28px}.ctx-row .ctx-aliases{grid-column:1 / 2}}
+
+/* ── Linked work items ─────────────────────────────────────────────────────
+   Rows shared by Setup (project defaults) and result cards (per-report).
+   Grid: relation select · issue key · title · open-link · remove. */
+.lwi-row{display:grid;grid-template-columns:150px 130px 1fr 26px 26px;gap:6px;align-items:center;margin-bottom:6px}
+.lwi-row select,.lwi-row input{font-size:12px;padding:6px 8px}
+.lwi-row select{font-family:'IBM Plex Mono',monospace;color:var(--muted)}
+.lwi-open{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:var(--r-sm);color:var(--accent);text-decoration:none;font-size:13px;background:var(--surface3)}
+a.lwi-open:hover{background:var(--accent-dim)}
+.linked-block{border-top:0.5px solid var(--border);padding:10px 14px;background:var(--surface)}
+.linked-block-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.linked-block-title{font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.linked-block-count{font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim);flex:1}
+.linked-block-empty{font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;padding:2px 0}
