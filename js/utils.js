@@ -90,6 +90,40 @@ function legacyReportSections(r) {
   };
 }
 
+// Strip a leading section label the AI may have copied into the value
+// ("AR: broken" inside the AR section). The renderer and the ADF builder add
+// the label themselves (section title / style.prefix), so any label left in
+// the value renders doubled — "AR: AR: broken". This happens when project
+// rules extracted from a template ("Format actual result as 'AR: …'")
+// conflict with the schema instruction not to embed prefixes. Repeats until
+// no label remains so even stacked dupes collapse. Conservative: only the
+// section's OWN label variants followed by a separator are stripped, so a
+// value that merely starts with a similar word ("Error message…" in the ER
+// section) is never mangled.
+function stripSectionLabel(text, section) {
+  let s = String(text || '');
+  if (!s.trim()) return s;
+  const labels = new Set();
+  const add = v => {
+    const t = String(v || '').replace(/[\s:]+$/, '').trim();
+    if (t) labels.add(t);
+  };
+  add(section.title);
+  add(section.style && section.style.prefix);
+  const sem = (String(section.id || '') + ' ' + String(section.title || '')).toLowerCase();
+  if (/actual|\bar\b/.test(sem))   { add('AR'); add('Actual result'); add('Actual'); }
+  if (/expected|\ber\b/.test(sem)) { add('ER'); add('Expected result'); add('Expected'); }
+  if (!labels.size) return s;
+  const esc = l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp('^\\s*(?:' + [...labels].map(esc).join('|') + ')\\s*[:.\\-–—]\\s*', 'i');
+  for (let guard = 0; guard < 4; guard++) {
+    const next = s.replace(pattern, '');
+    if (next === s || !next.trim()) break;
+    s = next;
+  }
+  return s;
+}
+
 function ensureNormalSections(r) {
   if (!r || typeof r !== 'object') return {};
   const tpl = getReportTemplate();
@@ -116,8 +150,10 @@ function ensureNormalSections(r) {
       } else {
         value = [];
       }
+      value = value.map(v => stripSectionLabel(v, section)).filter(v => v.trim());
     } else {
       value = stripJiraMarkup(value === undefined || value === null ? '' : String(value));
+      value = stripSectionLabel(value, section);
     }
     out[section.id] = value;
   });

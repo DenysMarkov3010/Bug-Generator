@@ -547,6 +547,8 @@ Given the bug report below, reverse-engineer the project's report format and con
 
    The order of fields the template uses is also a rule (e.g. "Steps section comes before Environment").
 
+   EXCEPTION — do NOT create rules about the report-body sections' own labels, prefixes, heading levels, colors, or order (e.g. "Prefix actual result with 'AR:'", "Format ER as a green h2 heading", "Steps come before AR"). Those exact conventions are captured machine-readably in reportTemplate (step 2) and the app applies them automatically; a duplicate rule makes the generator emit the prefix INSIDE the section value, rendering it doubled ("AR: AR: …"). Such conventions belong ONLY in reportTemplate.style.
+
 2. Extract reportTemplate — a MACHINE-READABLE schema that describes the Normal report body format shown in the template. This schema will drive Generate Report, the editable UI, Copy, and Jira formatting. Rules:
    - Include ONLY sections that belong to the bug report body / description format, in the exact order shown in the template.
    - Exclude universal top-level fields that the app owns separately: Summary, Severity/Priority, Jira status, created/updated dates, assignee/reporter, and custom Jira metadata.

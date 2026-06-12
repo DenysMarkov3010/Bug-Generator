@@ -111,7 +111,7 @@ Output schema notes:
 - "sections" = object whose keys are EXACTLY the section ids above.
   * For type=list sections, return an array of plain-text strings.
   * For type=text sections, return one plain-text string.
-  * Do not include section labels/prefixes such as "AR:", "Expected:", "Step 1:" inside values unless the user's actual content includes them.
+  * NEVER include section labels/prefixes such as "AR:", "ER:", "Expected:", "Step 1:" inside values. The app adds titles, prefixes, colors and heading styles automatically from the template schema — if a project rule above asks for such labels/prefixes/colors, treat it as ALREADY SATISFIED by the app and return the bare content. Including the prefix yourself renders it doubled ("AR: AR: …").
   * Keep content in the section that matches its description; do not duplicate the same information across sections.
   * Optional sections may be [] or "" when the user's description does not provide enough information.
 - "customFields" = best-effort extraction of the listed custom fields. Use null when not present.
