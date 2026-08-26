@@ -233,20 +233,25 @@ function restorePreviousFields() {
 
 function renderRules() {
   document.getElementById('rulesList').innerHTML = cfg.rules.map((r, i) => {
+    const pinTitle = r.pinned
+      ? 'Pinned — Analyze Template will not modify this rule. Click to unpin.'
+      : 'Pin this rule — Analyze Template will leave it untouched.';
+    const pinBtn = `<button class="rule-pin ${r.pinned ? 'on' : ''}" onclick="toggleRulePin(${i})" title="${pinTitle}" aria-label="${pinTitle}">📌</button>`;
+
     if (i === editingRuleIndex) {
       return `
-        <div class="rule-item">
-          <span class="rule-dot"></span>
-          <input type="text" class="rule-edit-input" id="ruleEditInput" value="${esc(r)}"
+        <div class="rule-item ${r.pinned ? 'pinned' : ''}">
+          ${pinBtn}
+          <input type="text" class="rule-edit-input" id="ruleEditInput" value="${esc(r.text)}"
                  onkeydown="onRuleEditKey(event)"/>
           <button class="rule-edit" onclick="saveRuleEdit()" title="Save">✓</button>
           <button class="rule-del"  onclick="cancelRuleEdit()" title="Cancel">×</button>
         </div>`;
     }
     return `
-      <div class="rule-item">
-        <span class="rule-dot"></span>
-        <span style="flex:1">${esc(r)}</span>
+      <div class="rule-item ${r.pinned ? 'pinned' : ''}">
+        ${pinBtn}
+        <span style="flex:1">${esc(r.text)}</span>
         <button class="rule-edit" onclick="startRuleEdit(${i})" title="Edit">✎</button>
         <button class="rule-del"  onclick="delRule(${i})"       title="Delete">×</button>
       </div>`;
@@ -266,7 +271,7 @@ function addRule() {
   const el = document.getElementById('newRule');
   const v  = el.value.trim();
   if (!v) return;
-  cfg.rules.push(v);
+  cfg.rules.push({ text: v, pinned: false });
   el.value = '';
   renderRules();
 }
@@ -287,7 +292,7 @@ function saveRuleEdit() {
   const input = document.getElementById('ruleEditInput');
   if (!input) return;
   const v = input.value.trim();
-  if (v) cfg.rules[editingRuleIndex] = v;
+  if (v) cfg.rules[editingRuleIndex].text = v;
   editingRuleIndex = -1;
   renderRules();
 }
@@ -300,6 +305,22 @@ function cancelRuleEdit() {
 function onRuleEditKey(e) {
   if (e.key === 'Enter')  { e.preventDefault(); saveRuleEdit();   }
   if (e.key === 'Escape') { e.preventDefault(); cancelRuleEdit(); }
+}
+
+// Toggle the "pinned" flag on an AI rule. Pinned rules are protected from
+// Analyze Template — the analyzer's rule-replace step keeps any pinned rule
+// exactly as-is and tells the AI not to re-suggest a duplicate of it.
+// Mirrors toggleFieldPin for Custom Jira fields below.
+//
+// Manual edits/delete remain allowed when pinned — pin only blocks the
+// AUTOMATIC Analyze Template pipeline, not user intent.
+function toggleRulePin(i) {
+  const r = cfg.rules[i];
+  if (!r) return;
+  r.pinned = !r.pinned;
+  localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+  renderRules();
+  toast(r.pinned ? `📌 Pinned rule` : `Unpinned rule`);
 }
 
 // Two inline-edit slots in the custom-fields table: one for the Jira ID
@@ -660,6 +681,7 @@ function importCfg(e) {
         cfg.voiceAiCleanup = DEFAULTS.voiceAiCleanup;
       }
       if (!Array.isArray(cfg.contextWords)) cfg.contextWords = [];
+      if (typeof normalizeRules === 'function') cfg.rules = normalizeRules(cfg.rules);
       cfg.linkedWorkItems = normalizeLinkedWorkItems(cfg.linkedWorkItems);
       cfg.reportTemplate = typeof normalizeReportTemplate === 'function'
         ? normalizeReportTemplate(cfg.reportTemplate)

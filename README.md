@@ -119,8 +119,14 @@ Copy, History, Batch, and Push to Jira all render the same template-driven
 structure. If no template has been analyzed yet, the default schema mirrors
 the old familiar layout: Preconditions, Steps, AR, ER.
 
-`cfg.rules` remains the human-readable contract. It is replaced by Analyze
+`cfg.rules` remains the human-readable contract — an array of
+`{ text, pinned }` rows. Non-pinned rules are replaced wholesale by Analyze
 Template and should describe both content rules and visual/ordering rules.
+📌 **Pin** a rule (Setup → AI rules) to protect it from that replace — pinned
+rules are kept exactly as-is across re-analyses, same protection Custom Jira
+fields already have. A default pinned rule ships out of the box: after any
+sentence containing "Logged in" / "User logged into", append the environment
+in parentheses (e.g. "User logged into the app (Stage env)").
 
 ### Gherkin
 
@@ -223,7 +229,7 @@ expanded.
 3. Click **💾 Save Template** (the source link is saved too — visible in the status line as `✓ Template from QA-1234`)
 4. Go to **⚙️ Setup** → in the **AI rules** card click **🔍 Analyze Template**
 5. The AI does several things in a single pass:
-   - Replaces **AI rules** with a complete set of content + visual/ordering rules for this template
+   - Replaces **non-pinned AI rules** with a complete set of content + visual/ordering rules for this template — 📌 pinned rules are left untouched
    - Extracts `cfg.reportTemplate`, the machine-readable Normal format schema used by Generate / UI / Copy / Jira
    - Detects **bug fields** filled in the template and adds them to **Custom Jira fields**; system fields get their ID auto-mapped, custom ones are resolved against `/rest/api/3/field` via your proxy (or marked **⚠ needs ID** if not resolvable)
    - Generates **two voice-dictation examples** (Ukrainian + English) that appear on the **📝 Report** page above the input — click **↓ Use as input** to start from that text
@@ -415,7 +421,6 @@ bug-report-agent/
     ├── session.js        # 🗂 Batch Report — bug cards, per-card mic, PiP, parallel generate
     ├── context.js        # 🔤 Context words glossary + correctTranscript() fuzzy auto-correction
     └── app.js            # DOMContentLoaded bootstrap + cfg migrations
-```
 
 > All `.js` files use classic `<script>` tags and share the global scope —
 > functions defined in one file are reachable from `onclick="..."` in HTML

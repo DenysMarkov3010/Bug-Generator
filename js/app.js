@@ -124,6 +124,33 @@ function migrateCfg() {
     if (k in cfg) { delete cfg[k]; changed = true; }
   }
 
+  // AI rules — promoted from bare strings to { text, pinned } objects so
+  // individual rules can be pinned against Analyze Template's replace.
+  if (typeof normalizeRules === 'function') {
+    const normalizedRules = normalizeRules(cfg.rules);
+    if (JSON.stringify(normalizedRules) !== JSON.stringify(cfg.rules)) {
+      cfg.rules = normalizedRules;
+      changed = true;
+    }
+  }
+
+  // One-time seed: backfill the "(env) after Logged in" rule for projects
+  // that already existed before rule pinning shipped, pinned by default so
+  // Analyze Template can't wipe it. Guarded by a flag (not just "does it
+  // already exist") so a user who later deletes it doesn't have it
+  // silently reappear on the next load.
+  if (localStorage.getItem('bra_seeded_login_env_rule') !== '1') {
+    const seedText = (DEFAULTS.rules.find(r => r.pinned) || {}).text;
+    if (Array.isArray(cfg.rules) && seedText && typeof normalizeRule === 'function') {
+      const already = cfg.rules.some(r => r && normalizeRule(r.text) === normalizeRule(seedText));
+      if (!already) {
+        cfg.rules.push({ text: seedText, pinned: true });
+        changed = true;
+      }
+    }
+    localStorage.setItem('bra_seeded_login_env_rule', '1');
+  }
+
   if (changed) localStorage.setItem('bra_cfg', JSON.stringify(cfg));
 }
 

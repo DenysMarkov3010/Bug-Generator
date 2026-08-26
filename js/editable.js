@@ -165,6 +165,12 @@
     li.style.alignItems  = 'flex-start';
     li.style.gap         = '6px';
 
+    const handle = document.createElement('span');
+    handle.className = 'drag-handle';
+    handle.setAttribute('draggable', 'true');
+    handle.title = 'Drag to reorder';
+    handle.textContent = '⠿';
+
     const span = document.createElement('span');
     span.setAttribute('contenteditable', 'plaintext-only');
     span.setAttribute('data-edit', key);
@@ -177,6 +183,7 @@
     btn.textContent = '×';
     btn.onclick = () => removeListItem(btn.closest('[data-edit-list]'), btn);
 
+    li.appendChild(handle);
     li.appendChild(span);
     li.appendChild(btn);
     listEl.appendChild(li);
@@ -213,6 +220,61 @@
       if (target.onUpdate) target.onUpdate();
     }
   }
+  // ── drag & drop reordering (list sections: Steps, Preconditions, etc.) ──
+  // Native HTML5 DnD scoped to a small grip handle (.drag-handle) so
+  // dragging never fights with editing/selecting the contenteditable text
+  // next to it. Reordering happens LIVE during dragover — the dragged <li>
+  // is moved in the DOM as the user hovers, Trello-style — then dragend
+  // fires a synthetic 'input' event on a surviving item so the existing
+  // input router (above) re-reads the new DOM order into the underlying
+  // array. No separate persistence path to keep in sync.
+  let dragEl = null;
+
+  document.addEventListener('dragstart', e => {
+    const handle = e.target.closest('.drag-handle');
+    if (!handle) return;
+    const li = handle.closest('li');
+    if (!li) return;
+    dragEl = li;
+    li.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox refuses to start a drag without setData; the payload itself
+    // is unused since we track the dragged element via `dragEl` (same
+    // document, same synchronous drag session).
+    try { e.dataTransfer.setData('text/plain', ''); } catch {}
+  });
+
+  document.addEventListener('dragover', e => {
+    if (!dragEl) return;
+    const listEl = e.target.closest('[data-edit-list]');
+    // Only allow reordering within the SAME list — dragging a step into the
+    // preconditions list (or vice versa) would corrupt both arrays.
+    if (!listEl || dragEl.parentElement !== listEl) return;
+    e.preventDefault();   // required for a drop to be permitted at all
+    const overLi = e.target.closest('li');
+    if (overLi && overLi !== dragEl) {
+      const rect = overLi.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      listEl.insertBefore(dragEl, before ? overLi : overLi.nextSibling);
+    } else if (!overLi) {
+      // Hovering empty space below the last item → move to the end.
+      listEl.appendChild(dragEl);
+    }
+  });
+
+  document.addEventListener('drop', e => {
+    if (dragEl) e.preventDefault();
+  });
+
+  document.addEventListener('dragend', () => {
+    if (!dragEl) return;
+    const listEl = dragEl.closest('[data-edit-list]');
+    dragEl.classList.remove('dragging');
+    dragEl = null;
+    const survivor = listEl && listEl.querySelector('[data-edit]');
+    if (survivor) survivor.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
   window.addStep        = (listSel) => addListItem(document.querySelector(listSel), 'step');
   window.addPrecond     = (listSel) => addListItem(document.querySelector(listSel), 'precondition');
   window.addSectionItem = (listSel) => addListItem(document.querySelector(listSel), 'sectionItem');
@@ -259,7 +321,7 @@ function renderEditableNormalBody(r, resultId) {
       const tag = s.listStyle === 'ordered' ? 'ol' : 'ul';
       const cls = s.listStyle === 'ordered' ? ' class="steps-ol"' : ' style="margin:0;padding-left:22px;color:var(--text);font-size:13px;line-height:1.65"';
       const lis = items.length
-        ? items.map(item => `<li style="display:flex;align-items:flex-start;gap:6px"><span style="flex:1;padding:2px 0" contenteditable="plaintext-only" data-edit="sectionItem">${esc(item)}</span><button class="list-item-del" onclick="removeListItem(this)" title="Remove">×</button></li>`).join('')
+        ? items.map(item => `<li style="display:flex;align-items:flex-start;gap:6px"><span class="drag-handle" draggable="true" title="Drag to reorder">⠿</span><span style="flex:1;padding:2px 0" contenteditable="plaintext-only" data-edit="sectionItem">${esc(item)}</span><button class="list-item-del" onclick="removeListItem(this)" title="Remove">×</button></li>`).join('')
         : `<li><span style="flex:1;color:var(--dim);font-style:italic" contenteditable="plaintext-only" data-edit="sectionItem">(click to add)</span></li>`;
       return `${divider}${wrapStart}
         ${sectionLabel(s)}

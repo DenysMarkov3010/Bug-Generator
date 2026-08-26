@@ -523,11 +523,20 @@ async function analyzeTemplate() {
     ? `\nThe user has PINNED these custom fields — they are already perfectly configured and must NOT be re-detected. Do NOT include any of them in detectedFields, even if they appear in the template: ${pinnedNames.map(n => `"${n}"`).join(', ')}.\n`
     : '';
 
+  // Pinned AI rules are off-limits for re-analysis, same as pinned custom
+  // fields above — they're kept exactly as-is in code (see the rules-replace
+  // block below), so telling the model about them up-front avoids near-dup
+  // restatements cluttering the fresh rule set.
+  const pinnedRuleTexts = cfg.rules.filter(r => r && r.pinned).map(r => r.text);
+  const pinnedRulesBlock = pinnedRuleTexts.length
+    ? `\nThe user has PINNED these existing rules — they are already perfectly configured, will be KEPT AS-IS automatically, and must NOT be restated or duplicated in your rules output: ${pinnedRuleTexts.map(t => `"${t}"`).join('; ')}.\n`
+    : '';
+
   const sys = `You are a senior QA engineer reverse-engineering a project's bug-reporting conventions.
-${pinnedBlock}
+${pinnedBlock}${pinnedRulesBlock}
 Given the bug report below, reverse-engineer the project's report format and conventions:
 
-1. Extract a COMPLETE set of 6-14 writing rules that fully describe how a bug report for this project should look. This list will REPLACE the project's existing rules wholesale — so it must be self-contained: cover every convention a teammate would need to reproduce the template's style from scratch. Capture BOTH content conventions AND visual style conventions.
+1. Extract a COMPLETE set of 6-14 writing rules that fully describe how a bug report for this project should look. This list will REPLACE the project's existing NON-PINNED rules wholesale — so it must be self-contained: cover every convention a teammate would need to reproduce the template's style from scratch. Capture BOTH content conventions AND visual style conventions.
 
    Content rules (semantic):
    - Which FIELDS are present (environment, browser, OS, steps, expected/actual, attachments…)
@@ -725,27 +734,44 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
     // additive merging produces a stale Frankenstein list. Replace keeps
     // rules tightly aligned with the current template.
     //
+    // EXCEPT pinned rules — same protection as pinned custom fields: they're
+    // sacred across re-analyses, preserved exactly, and never re-derived
+    // from a duplicate the AI suggests.
+    //
     // We still de-dup within THIS batch (AI sometimes outputs near-clones),
     // so the final list is clean even if the model gets verbose.
     const candidates = arr
       .filter(r => typeof r === 'string' && r.trim())
       .map(r => r.trim());
 
-    const newRules = [];
-    let dupIntra   = 0;
+    // NOTE: pinnedRuleTexts was already computed above (before the AI call)
+    // to build pinnedRulesBlock for the prompt — cfg.rules hasn't changed
+    // since, so it's reused as-is here instead of recomputing.
+    const previousRules = cfg.rules.slice();
+    const pinnedRules    = previousRules.filter(r => r && r.pinned);
+    const previousNonPinnedRules = previousRules.length - pinnedRules.length;
+
+    const newRuleTexts = [];
+    let dupIntra           = 0;
+    let skippedPinnedRules = 0; // AI re-suggested something matching a pinned rule
     for (const r of candidates) {
-      if (isSimilarRule(r, newRules)) { dupIntra++; continue; }
-      newRules.push(r);
+      if (isSimilarRule(r, pinnedRuleTexts)) { skippedPinnedRules++; continue; }
+      if (isSimilarRule(r, newRuleTexts)) { dupIntra++; continue; }
+      newRuleTexts.push(r);
     }
 
     // Save the previous list so the user can undo the wholesale replace
     // (e.g. if they had hand-tweaked rules they didn't want to lose).
     // Only kept in localStorage — never exported with cfg JSON.
-    const previousRules = cfg.rules.slice();
-    const replacedCount = previousRules.length;
-    localStorage.setItem('bra_rules_backup', JSON.stringify(previousRules));
+    const replacedCount = previousNonPinnedRules;
+    if (replacedCount > 0) {
+      localStorage.setItem('bra_rules_backup', JSON.stringify(previousRules));
+    }
 
-    cfg.rules = newRules;
+    // Pinned first so they stay at the top of the list (visually anchored
+    // user-curated rows), then the fresh detections in AI's order — same
+    // ordering convention as cfg.customFields below.
+    cfg.rules = [...pinnedRules, ...newRuleTexts.map(text => ({ text, pinned: false }))];
 
     let templateSections = 0;
     if (reportTpl && typeof normalizeReportTemplate === 'function') {
@@ -923,11 +949,13 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
     // Rules-replaced summary leads the toast; field/example deltas follow.
     const parts = [];
     if (replacedCount) {
-      parts.push(`Replaced ${replacedCount} rule${replacedCount === 1 ? '' : 's'} → ${newRules.length}`);
+      parts.push(`Replaced ${replacedCount} rule${replacedCount === 1 ? '' : 's'} → ${newRuleTexts.length}`);
     } else {
-      parts.push(`${newRules.length} rule${newRules.length === 1 ? '' : 's'} set`);
+      parts.push(`${newRuleTexts.length} rule${newRuleTexts.length === 1 ? '' : 's'} set`);
     }
     if (dupIntra) parts.push(`(${dupIntra} AI dup${dupIntra === 1 ? '' : 's'} skipped)`);
+    if (skippedPinnedRules) parts.push(`(${skippedPinnedRules} AI dup of pinned rule${skippedPinnedRules === 1 ? '' : 's'} skipped)`);
+    if (pinnedRules.length) parts.push(`📌 ${pinnedRules.length} rule${pinnedRules.length === 1 ? '' : 's'} pinned untouched`);
     if (addedFields || replacedCountFields) {
       const bits = [];
       if (replacedCountFields) {
@@ -940,7 +968,7 @@ Each rule must be a single imperative sentence (max 140 chars), starting with a 
       if (unresolved)    bits.push(`${unresolved} need manual ID`);
       parts.push('+ ' + bits.join(', '));
     }
-    if (skippedPinned) parts.push(`📌 ${skippedPinned} pinned untouched`);
+    if (skippedPinned) parts.push(`📌 ${skippedPinned} field${skippedPinned === 1 ? '' : 's'} pinned untouched`);
     if (examples) parts.push('+ voice examples');
     if (envWritten) parts.push('+ default environment');
     if (templateSections) parts.push(`+ ${templateSections} report section${templateSections === 1 ? '' : 's'}`);

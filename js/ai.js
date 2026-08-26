@@ -16,7 +16,7 @@
 // context so the AI mirrors the source ticket's exact wording.
 function buildSystemPrompt(opts) {
   const { isGherkin = false } = opts || {};
-  const rulesText = cfg.rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
+  const rulesText = cfg.rules.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
 
   // Environment override — same logic as the legacy single-bug prompt.
   const envHasDefault = !!(cfg.defaultEnvironment && cfg.defaultEnvironment.trim());

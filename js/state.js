@@ -16,12 +16,17 @@ const DEFAULTS = {
   // analyzeTemplate to force a VALID numeric sprint id into the Sprint
   // custom field instead of trusting the AI to copy it correctly.
   templateSprint: null,
+  // Each entry: { text: string, pinned: boolean }. `pinned` protects the
+  // rule from Analyze Template's wholesale replace (see analyzeTemplate in
+  // template.js) — pinned rules are kept exactly as-is across re-analyses,
+  // same protection customFields already has via its own `pinned` flag.
   rules: [
-    'Always include numbered steps to reproduce',
-    'Separate expected vs actual behavior clearly',
-    'Assign severity: Critical / High / Medium / Low',
-    'Extract environment info (browser, OS, version) if mentioned',
-    'Write a clear concise summary title (max 80 chars)',
+    { text: 'Always include numbered steps to reproduce', pinned: false },
+    { text: 'Separate expected vs actual behavior clearly', pinned: false },
+    { text: 'Assign severity: Critical / High / Medium / Low', pinned: false },
+    { text: 'Extract environment info (browser, OS, version) if mentioned', pinned: false },
+    { text: 'Write a clear concise summary title (max 80 chars)', pinned: false },
+    { text: 'After any step or precondition sentence containing "Logged in" or "User logged into", append the environment name in parentheses right after that sentence — e.g. "User logged into the app (Stage env)".', pinned: true },
   ],
   customFields: [
     { name: 'Component / Module', type: 'text', jiraId: 'components', required: 'no' },
@@ -101,6 +106,18 @@ function normalizeLinkRelation(rel) {
 function extractLinkedIssueKey(s) {
   const m = String(s || '').toUpperCase().match(/([A-Z][A-Z0-9_]+-\d+)/);
   return m ? m[1] : '';
+}
+
+// Coerce cfg.rules into the current { text, pinned } shape. Accepts legacy
+// plain-string rows (pre-pinning builds, or an older exported JSON) as well
+// as the current object shape; drops anything with no usable text.
+function normalizeRules(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(r => {
+    if (typeof r === 'string') return { text: r.trim(), pinned: false };
+    if (r && typeof r === 'object') return { text: String(r.text || '').trim(), pinned: !!r.pinned };
+    return null;
+  }).filter(r => r && r.text);
 }
 
 // Coerce any stored / AI-returned list into clean rows. Drops entries with

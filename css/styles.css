@@ -45,6 +45,7 @@ textarea::placeholder,input::placeholder{color:var(--dim)}
 .card-body{padding:15px}
 .rules-list{display:flex;flex-direction:column;gap:5px;margin-bottom:9px}
 .rule-item{display:flex;align-items:center;gap:8px;background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--r-sm);padding:7px 10px;font-size:13px}
+.rule-item.pinned{background:rgba(76,112,255,.07);border-color:rgba(76,112,255,.35)}
 .rule-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0}
 .rule-del,.rule-edit{background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;transition:color .15s}
 .rule-del{font-size:16px}
@@ -177,6 +178,13 @@ textarea::placeholder,input::placeholder{color:var(--dim)}
 .add-step-btn:hover{border-color:var(--border-md);color:var(--muted);background:var(--surface2)}
 .list-item-del{background:none;border:0.5px solid var(--border);color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:2px 6px;border-radius:var(--r-sm);flex-shrink:0;opacity:.5;transition:all .15s;margin-top:2px}
 .list-item-del:hover{background:var(--red-dim);color:var(--red);border-color:rgba(255,94,87,.3);opacity:1}
+/* Drag-to-reorder grip for list sections (Steps, Preconditions, etc.). Only
+   this small handle is draggable=true — not the whole <li> — so dragging
+   never fights with selecting/editing the contenteditable text beside it. */
+.drag-handle{cursor:grab;color:var(--dim);font-size:13px;line-height:1;padding:4px 5px 4px 1px;flex-shrink:0;user-select:none;-webkit-user-select:none;margin-top:1px;transition:color .15s}
+.drag-handle:hover{color:var(--muted)}
+.drag-handle:active{cursor:grabbing}
+[data-edit-list] li.dragging{opacity:.35}
 .sev-edit{cursor:pointer;border:0.5px solid transparent;transition:border-color .15s}
 .sev-edit:hover{border-color:var(--border-md)}
 
