@@ -173,6 +173,20 @@ let lastRep    = null;
 //                  (GIVEN/WHEN/THEN) + Actual / Expected result bullets.
 let reportFormat  = localStorage.getItem('bra_format') || 'normal';
 
+// ── Composite Bug (Single Report) ─────────────────────────────────────────
+// compositeMode   = Composite Bug toggle. When on, the Single Report input
+//                   is a list of issue sections instead of one textarea and
+//                   the result is ONE Jira ticket with a collapsible Expand
+//                   "Issue #N. <title>" per issue (see composite.js).
+// compositeIssues = in-memory input sections { id, text } — not persisted,
+//                   same as the #tin textarea.
+// compositeActiveId = section the main mic dictates into (last focused /
+//                   last added).
+let compositeMode         = localStorage.getItem('bra_composite') === '1';
+let compositeIssues       = [];
+let compositeIssueCounter = 0;
+let compositeActiveId     = null;
+
 // ── Session-page state ────────────────────────────────────────────────────
 // Independent mic / format / lang / cards because the Session page lets
 // the user dictate MANY bugs back-to-back without interfering with the

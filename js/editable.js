@@ -34,7 +34,12 @@
 
   function resolveResultTarget(id) {
     if (!id) return null;
-    const [scope, key] = String(id).split(':');
+    // Split on the FIRST colon only — composite issue keys embed their
+    // parent's id ("issue:0@history:1748257200000").
+    const str = String(id);
+    const cut = str.indexOf(':');
+    const scope = cut === -1 ? str : str.slice(0, cut);
+    const key   = cut === -1 ? '' : str.slice(cut + 1);
     const r = resolvers[scope];
     if (!r) return null;
     return r(key);
@@ -75,6 +80,19 @@
         saveHistory(list);
       },
     };
+  });
+
+  // Composite issue scope ("issue:<idx>@<parentResultId>") — one Expand
+  // block of a Composite Bug. Edits land on parent.issues[idx]; persistence
+  // is whatever the parent scope does (History saves, Report/Card in-memory).
+  registerResultResolver('issue', (key) => {
+    const at = key.indexOf('@');
+    if (at === -1) return null;
+    const idx = parseInt(key.slice(0, at), 10);
+    const parent = resolveResultTarget(key.slice(at + 1));
+    const issue = parent && parent.obj && Array.isArray(parent.obj.issues) && parent.obj.issues[idx];
+    if (!issue) return null;
+    return { obj: issue, onUpdate: parent.onUpdate };
   });
 
   // ── input router ───────────────────────────────────────────────────────
@@ -292,6 +310,19 @@
 // matter where the report is displayed.
 
 function renderEditableNormalBody(r, resultId) {
+  if (Array.isArray(r.issues)) return renderEditableCompositeBody(r, resultId, false);
+  return `
+    <div class="r-f"><div class="r-l">Summary</div><div class="r-v sum" contenteditable="plaintext-only" data-edit="summary">${esc(r.summary || '')}</div></div>
+    <hr class="r-div">
+    ${renderNormalSectionsHtml(r, resultId)}
+    ${renderEnvironmentHtml(r)}
+    ${renderCustomFieldsHtml(r)}`;
+}
+
+// Template-driven sections of one Normal report (or one composite issue).
+// `resultId` must be the data-result-id of the nearest scope wrapping the
+// returned markup — the "+ item" buttons use it to find their list.
+function renderNormalSectionsHtml(r, resultId) {
   const tpl = typeof getReportTemplate === 'function' ? getReportTemplate() : { sections: [] };
   const sections = typeof ensureNormalSections === 'function'
     ? ensureNormalSections(r)
@@ -343,12 +374,22 @@ function renderEditableNormalBody(r, resultId) {
     </div>`;
   }
 
+  return tpl.sections.map(renderSection).join('<hr class="r-div">');
+}
+
+function renderEnvironmentHtml(r) {
+  return r.environment
+    ? `<hr class="r-div"><div class="r-f"><div class="r-l">Environment</div><div class="r-v" style="white-space:pre-wrap;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55" contenteditable="plaintext-only" data-edit="environment">${esc(r.environment || '')}</div></div>`
+    : '';
+}
+
+function renderCustomFieldsHtml(r) {
   const populatedFields = (cfg.customFields || []).filter(f => {
     if (typeof isEnvironmentField === 'function' && isEnvironmentField(f.name, f.jiraId)) return false;
     const v = r.customFields?.[f.name];
     return v !== undefined && v !== null && v !== '' && v !== 'null';
   });
-  const cfHtml = populatedFields.length
+  return populatedFields.length
     ? `<hr class="r-div"><div class="r-l">Custom fields</div><div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">`
       + populatedFields.map(f => {
           const v = r.customFields[f.name];
@@ -358,16 +399,21 @@ function renderEditableNormalBody(r, resultId) {
           </div>`;
         }).join('') + '</div>'
     : '';
-
-  return `
-    <div class="r-f"><div class="r-l">Summary</div><div class="r-v sum" contenteditable="plaintext-only" data-edit="summary">${esc(r.summary || '')}</div></div>
-    <hr class="r-div">
-    ${tpl.sections.map(renderSection).join('<hr class="r-div">')}
-    ${r.environment ? `<hr class="r-div"><div class="r-f"><div class="r-l">Environment</div><div class="r-v" style="white-space:pre-wrap;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55" contenteditable="plaintext-only" data-edit="environment">${esc(r.environment || '')}</div></div>` : ''}
-    ${cfHtml}`;
 }
 
 function renderEditableGherkinBody(r, resultId = 'report') {
+  if (Array.isArray(r.issues)) return renderEditableCompositeBody(r, resultId, true);
+  return `
+    <div class="r-f"><div class="r-l">Summary</div><div class="r-v sum" contenteditable="plaintext-only" data-edit="summary">${esc(r.summary || '')}</div></div>
+    <hr class="r-div">
+    ${renderGherkinCoreHtml(r, true)}
+    ${renderCustomFieldsHtml(r)}`;
+}
+
+// Description + (Environment) + AR / ER bullets + Additional info of one
+// Gherkin report or composite issue. Environment is umbrella-level in a
+// composite report, so issues pass withEnvironment=false.
+function renderGherkinCoreHtml(r, withEnvironment) {
   // AR / ER come in as multiline strings ("- bullet\n- bullet"); split
   // them into list items so the user can edit individual bullets.
   function splitBullets(s) {
@@ -377,29 +423,11 @@ function renderEditableGherkinBody(r, resultId = 'report') {
   const arItems = splitBullets(r.actualResult);
   const erItems = splitBullets(r.expectedResult);
 
-  const populatedFields = (cfg.customFields || []).filter(f => {
-    if (typeof isEnvironmentField === 'function' && isEnvironmentField(f.name, f.jiraId)) return false;
-    const v = r.customFields?.[f.name];
-    return v !== undefined && v !== null && v !== '' && v !== 'null';
-  });
-  const cfHtml = populatedFields.length
-    ? `<hr class="r-div"><div class="r-l">Custom fields</div><div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">`
-      + populatedFields.map(f => {
-          const v = r.customFields[f.name];
-          return `<div style="display:flex;gap:10px;align-items:baseline">
-            <span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim);min-width:130px">${esc(f.name)}</span>
-            <span style="font-size:13px;color:var(--text);flex:1" contenteditable="plaintext-only" data-edit="customField" data-cf-name="${esc(f.name)}">${esc(String(v))}</span>
-          </div>`;
-        }).join('') + '</div>'
-    : '';
-
   return `
-    <div class="r-f"><div class="r-l">Summary</div><div class="r-v sum" contenteditable="plaintext-only" data-edit="summary">${esc(r.summary || '')}</div></div>
-    <hr class="r-div">
     <div class="r-f"><div class="r-l">Description</div><div class="r-v" style="line-height:1.8;white-space:pre-wrap" contenteditable="plaintext-only" data-edit="description">${esc(r.description || '')}</div></div>
     <hr class="r-div">
-    <div class="r-f"><div class="r-l">Environment</div><div class="r-v" style="white-space:pre-wrap;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55" contenteditable="plaintext-only" data-edit="environment">${esc(r.environment || '')}</div></div>
-    <hr class="r-div">
+    ${withEnvironment ? `<div class="r-f"><div class="r-l">Environment</div><div class="r-v" style="white-space:pre-wrap;font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55" contenteditable="plaintext-only" data-edit="environment">${esc(r.environment || '')}</div></div>
+    <hr class="r-div">` : ''}
     <div class="r-f">
       <div class="r-l">Actual result</div>
       <ul style="margin:0;padding-left:22px;color:var(--text);font-size:13px;line-height:1.7" data-edit-list="actualResult">
@@ -419,8 +447,36 @@ function renderEditableGherkinBody(r, resultId = 'report') {
     </div>
     ${r.additionalInfo !== undefined
       ? `<hr class="r-div"><div class="r-f"><div class="r-l">Additional info</div><div class="r-v" contenteditable="plaintext-only" data-edit="additionalInfo">${esc(r.additionalInfo || '')}</div></div>`
-      : ''}
-    ${cfHtml}`;
+      : ''}`;
+}
+
+// Composite Bug body: umbrella Summary, then one collapsible block per issue
+// (mirrors the Jira Expand "Issue #N. <title>"), then the shared
+// Environment / Custom fields. Each issue block is its own data-result-id
+// scope ("issue:<idx>@<resultId>") so the existing input router writes
+// title / sections / bullets straight into r.issues[idx].
+function renderEditableCompositeBody(r, resultId, isGherkin) {
+  const issues = Array.isArray(r.issues) ? r.issues : [];
+  const blocks = issues.map((issue, i) => {
+    const issueId = `issue:${i}@${resultId}`;
+    const body = isGherkin ? renderGherkinCoreHtml(issue, false) : renderNormalSectionsHtml(issue, issueId);
+    return `<div class="ci-res" data-result-id="${esc(issueId)}">
+      <div class="ci-res-head">
+        <button class="ci-res-toggle" onclick="this.closest('.ci-res').classList.toggle('collapsed')" title="Collapse / expand">▾</button>
+        <span class="ci-res-num">Issue #${i + 1}.</span>
+        <span class="ci-res-title" contenteditable="plaintext-only" data-edit="title">${esc(issue.title || '')}</span>
+      </div>
+      <div class="ci-res-body">${body}</div>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="r-f"><div class="r-l">Summary</div><div class="r-v sum" contenteditable="plaintext-only" data-edit="summary">${esc(r.summary || '')}</div></div>
+    <hr class="r-div">
+    <div class="r-l" style="margin-bottom:8px">Issues · each becomes a Jira Expand "Issue #N. Title"</div>
+    ${blocks}
+    ${renderEnvironmentHtml(r)}
+    ${renderCustomFieldsHtml(r)}`;
 }
 
 // ── Linked work items block (result cards) ─────────────────────────────────

@@ -3,7 +3,9 @@ function copyReport() {
   if (!lastRep) return;
   const r = lastRep;
   let txt;
-  if (reportFormat === 'gherkin') {
+  if (Array.isArray(r.issues)) {
+    txt = buildCompositePlainText(r, reportFormat === 'gherkin');
+  } else if (reportFormat === 'gherkin') {
     txt = `Summary: ${r.summary}
 Severity: ${r.severity}
 Environment: ${r.environment || 'N/A'}
@@ -37,9 +39,20 @@ function buildLinkedWorkItemsText(r) {
 }
 
 function buildNormalPlainText(r) {
+  if (Array.isArray(r.issues)) return buildCompositePlainText(r, false);
+  const parts = [`Summary: ${r.summary || ''}`, `Severity: ${r.severity || 'Medium'}`, ...normalSectionsTextParts(r)];
+  if (r.environment && String(r.environment).trim()) {
+    parts.push(`Environment: ${r.environment}`);
+  }
+  return parts.filter(p => p !== '').join('\n\n') + buildLinkedWorkItemsText(r);
+}
+
+// Template-driven sections of one Normal report (or one composite issue) as
+// plain-text blocks, in template order.
+function normalSectionsTextParts(r) {
   const tpl = typeof getReportTemplate === 'function' ? getReportTemplate() : { sections: [] };
   const sections = typeof ensureNormalSections === 'function' ? ensureNormalSections(r) : (r.sections || {});
-  const parts = [`Summary: ${r.summary || ''}`, `Severity: ${r.severity || 'Medium'}`];
+  const parts = [];
 
   tpl.sections.forEach(section => {
     const value = sections[section.id];
@@ -57,11 +70,34 @@ function buildNormalPlainText(r) {
       parts.push(`${prefix || (section.title + ': ')}${txt}`);
     }
   });
+  return parts;
+}
 
+// Composite Bug → plain text: umbrella header, then one "Issue #N. Title"
+// block per issue (mirrors the Jira Expands), then Environment + links.
+function buildCompositePlainText(r, isGherkin) {
+  const parts = [`Summary: ${r.summary || ''}`, `Severity: ${r.severity || 'Medium'}`];
+  (r.issues || []).forEach((issue, i) => {
+    const body = isGherkin
+      ? [
+          issue.description ? `Description:\n${issue.description}` : '',
+          issue.actualResult ? `Actual result:\n${issue.actualResult}` : '',
+          issue.expectedResult ? `Expected result:\n${issue.expectedResult}` : '',
+          issue.additionalInfo ? `Additional info: ${issue.additionalInfo}` : '',
+        ].filter(Boolean)
+      : normalSectionsTextParts(issue);
+    parts.push(`${compositeIssueHeading(issue, i)}\n\n${body.join('\n\n')}`);
+  });
   if (r.environment && String(r.environment).trim()) {
     parts.push(`Environment: ${r.environment}`);
   }
-  return parts.filter(p => p !== '').join('\n\n') + buildLinkedWorkItemsText(r);
+  return parts.join('\n\n') + buildLinkedWorkItemsText(r);
+}
+
+// "Issue #2. Title" — the Expand title in Jira and the heading in Copy.
+function compositeIssueHeading(issue, i) {
+  const title = String((issue && issue.title) || '').trim();
+  return `Issue #${i + 1}.${title ? ' ' + title : ''}`;
 }
 
 // ── unified Jira request helper ───────────────────────────────────────────
@@ -146,10 +182,38 @@ function buildAdfDescription(r) {
   // normal reports. The split happens here so the rest of pushToJira()
   // stays format-agnostic. `reportFormat` is set by ai.js / session.js /
   // history.js before they call pushToJira().
+  if (Array.isArray(r.issues)) return buildAdfDescriptionComposite(r);
   if (reportFormat === 'gherkin') return buildAdfDescriptionGherkin(r);
 
+  const blocks = buildNormalAdfBlocks(r);
+  // Jira rejects an empty content array — always include at least one block.
+  if (!blocks.length) blocks.push({ type: 'paragraph', content: [{ type: 'text', text: '(no details)' }] });
+  return { type: 'doc', version: 1, content: blocks };
+}
+
+// ── ADF builder for Composite Bug reports ─────────────────────────────────
+// One Jira "Expand" element per issue, titled "Issue #N. <title>", holding
+// that issue's full body — built by the same Normal / Gherkin block builders
+// a standalone report uses, so styling (panels, colored AR/ER headings,
+// ordered steps) is identical inside each Expand.
+function buildAdfDescriptionComposite(r) {
+  const isGherkin = reportFormat === 'gherkin';
+  const blocks = (r.issues || []).map((issue, i) => {
+    const inner = isGherkin ? buildGherkinAdfBlocks(issue) : buildNormalAdfBlocks(issue);
+    return {
+      type: 'expand',
+      attrs: { title: compositeIssueHeading(issue, i) },
+      content: inner.length ? inner : [{ type: 'paragraph', content: [{ type: 'text', text: '(no details)' }] }],
+    };
+  });
+  if (!blocks.length) blocks.push({ type: 'paragraph', content: [{ type: 'text', text: '(no details)' }] });
+  return { type: 'doc', version: 1, content: blocks };
+}
+
+// Template-driven Normal body as a flat ADF block array (no doc wrapper) —
+// shared by standalone reports and each composite issue.
+function buildNormalAdfBlocks(r) {
   const blocks = [];
-  const text  = txt => ({ type: 'text', text: String(txt) });
   const RULE  = { type: 'rule' };
   const tpl = typeof getReportTemplate === 'function' ? getReportTemplate() : { sections: [] };
   const sections = typeof ensureNormalSections === 'function' ? ensureNormalSections(r) : (r.sections || {});
@@ -217,11 +281,7 @@ function buildAdfDescription(r) {
       blocks.push(...target);
     }
   });
-
-  // Jira rejects an empty content array — always include at least one block.
-  if (!blocks.length) blocks.push({ type: 'paragraph', content: [text('(no details)')] });
-
-  return { type: 'doc', version: 1, content: blocks };
+  return blocks;
 }
 
 // ── ADF builder for Gherkin-format reports ────────────────────────────────
@@ -235,6 +295,14 @@ function buildAdfDescription(r) {
 // We keep the same red/green color convention as the normal report so the
 // Jira ticket maintains a consistent visual identity across formats.
 function buildAdfDescriptionGherkin(r) {
+  const blocks = buildGherkinAdfBlocks(r);
+  if (!blocks.length) blocks.push({ type: 'paragraph', content: [{ type: 'text', text: '(no details)' }] });
+  return { type: 'doc', version: 1, content: blocks };
+}
+
+// Gherkin body as a flat ADF block array — shared by standalone reports and
+// each composite issue.
+function buildGherkinAdfBlocks(r) {
   const blocks = [];
   const text   = s => ({ type: 'text', text: String(s) });
   const RULE   = { type: 'rule' };
@@ -311,9 +379,7 @@ function buildAdfDescriptionGherkin(r) {
     blocks.push({ type: 'heading', attrs: { level: 3 }, content: [text('Additional info')] });
     blocks.push({ type: 'paragraph', content: parseBackticks(r.additionalInfo) });
   }
-
-  if (!blocks.length) blocks.push({ type: 'paragraph', content: [text('(no details)')] });
-  return { type: 'doc', version: 1, content: blocks };
+  return blocks;
 }
 
 // Split a line into ADF text nodes, turning `code` spans into mono code.

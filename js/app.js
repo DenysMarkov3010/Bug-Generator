@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // localStorage. Saves the user from clicking Gherkin every reload.
   if (typeof setReportFormat === 'function')  setReportFormat(reportFormat);
   if (typeof setSessionFormat === 'function') setSessionFormat(sessionFormat);
+  if (typeof setCompositeMode === 'function') setCompositeMode(compositeMode, false);
   if (typeof renderContextWords === 'function') renderContextWords();
   maybeShowInstallBanner();
   registerVoiceServiceWorker();

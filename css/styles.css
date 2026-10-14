@@ -217,3 +217,28 @@ a.lwi-open:hover{background:var(--accent-dim)}
 .linked-block-title{font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .linked-block-count{font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim);flex:1}
 .linked-block-empty{font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;padding:2px 0}
+
+/* ── Composite Bug ─────────────────────────────────────────────────────────
+   Input: one section per issue (Single Report, Composite on). .active = where
+   the big mic dictates; .rec = section currently being dictated.
+   Result: one collapsible block per issue, mirroring the Jira Expand. */
+.ci-in{background:var(--surface);border:0.5px solid var(--border);border-radius:var(--r);padding:10px 12px 12px;margin-bottom:.6rem;transition:border-color .15s,box-shadow .15s}
+.ci-in.active{border-color:var(--border-md)}
+.ci-in.rec{border-color:var(--red);box-shadow:0 0 0 1px rgba(255,94,87,.22)}
+.ci-in-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.ci-in-title{font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-weight:500}
+.ci-in.active .ci-in-title{color:var(--accent)}
+.ci-in-status{flex:1;font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)}
+.ci-in.rec .ci-in-status{color:var(--red)}
+.ci-in textarea{width:100%}
+.ci-mic{width:30px;height:30px;border-radius:50%;border:0.5px solid var(--border-md);background:var(--surface2);color:var(--text);font-size:14px;line-height:1;cursor:pointer;flex-shrink:0;transition:background .15s,border-color .15s}
+.ci-mic:hover{background:var(--surface3)}
+.ci-mic.rec{background:var(--red-dim);border-color:var(--red);animation:pulse 1.1s ease-in-out infinite}
+.ci-res{border:0.5px solid var(--border-md);border-radius:var(--r-sm);margin-bottom:10px;overflow:hidden}
+.ci-res-head{display:flex;align-items:baseline;gap:6px;padding:8px 12px;background:var(--surface2);font-size:14px;font-weight:500}
+.ci-res-toggle{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0 4px 0 0;transition:transform .15s}
+.ci-res.collapsed .ci-res-toggle{transform:rotate(-90deg)}
+.ci-res-num{color:var(--text);flex-shrink:0}
+.ci-res-title{flex:1;color:var(--text)}
+.ci-res-body{padding:12px 14px}
+.ci-res.collapsed .ci-res-body{display:none}

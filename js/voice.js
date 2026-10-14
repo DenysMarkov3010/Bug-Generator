@@ -66,25 +66,59 @@ let committedFinal = '';   // accumulated finalized transcript across ALL sub-se
 let prevFrameFinal = '';   // last onresult's full final text — used for delta math
 let userStopped    = false;// true when user (not the browser) ended recognition
 
+// ── dictation target ──────────────────────────────────────────────────────
+// Id of the textarea the Single-Report mic writes into: '#tin' normally, or
+// one Composite Bug issue section ('ci-txt-<n>', see composite.js). Fixed at
+// startRec and changed mid-recording only by switchDictationTarget. Kept as
+// an id (not an element) because composite sections get re-rendered while
+// dictating (add / remove / renumber) — a held element would go stale.
+let dictTargetId = 'tin';
+// Composite issue sections whose GPT-4o transcription is still in flight
+// after "+ Next issue" moved the mic on (shown as ⏳ on the section).
+const transcribingTargets = new Set();
+
+function currentDictationTargetId() {
+  const id = (typeof compositeDictationTargetId === 'function') ? compositeDictationTargetId() : null;
+  return id || 'tin';
+}
+
+function dictationTargetEl() {
+  return document.getElementById(dictTargetId) || document.getElementById('tin');
+}
+
+// Let composite.js repaint per-issue mic / status indicators.
+function notifyDictationState() {
+  if (typeof refreshCompositeDictationState === 'function') refreshCompositeDictationState();
+}
+
 // ── GPT-4o post-stop transcription ─────────────────────────────────────────
 // `cleanupSeq` invalidates an in-flight transcription when a newer recording
 // starts, so a slow response can never stomp fresher text.
 let cleanupSeq = 0;
 
-async function maybeTranscribeGpt4o(audioBlob) {
+// `detached` = {targetId, base}: the chunk recorded for a composite issue
+// the mic has already moved on from ("+ Next issue"). It must land in THAT
+// section even though recording continues, so it skips the cleanupSeq /
+// isRec guards (which protect the current target) and the status line.
+async function maybeTranscribeGpt4o(audioBlob, detached) {
   if (!audioBlob || !audioBlob.size) return;
   if (!apiKey) return;
   if (typeof transcribeWithGpt4o !== 'function') return;
-  const ta = document.getElementById('tin');
-  if (!ta) return;
+  const targetId = detached ? detached.targetId : dictTargetId;
+  if (!document.getElementById(targetId)) return;
 
-  const base = baseText;
-  const snapshot = ta.value;
-  const seq = ++cleanupSeq;
+  const base = detached ? (detached.base || '') : baseText;
+  const snapshot = document.getElementById(targetId).value;
+  const seq = detached ? 0 : ++cleanupSeq;
   const st = document.getElementById('vSt');
   const ht = document.getElementById('vHt');
-  if (st) st.textContent = 'Transcribing with GPT-4o…';
-  if (ht) ht.textContent = 'OpenRouter is transcribing the recorded audio — browser preview stays until it returns';
+  if (detached) {
+    transcribingTargets.add(targetId);
+    notifyDictationState();
+  } else {
+    if (st) st.textContent = 'Transcribing with GPT-4o…';
+    if (ht) ht.textContent = 'OpenRouter is transcribing the recorded audio — browser preview stays until it returns';
+  }
 
   let transcribed = '';
   try {
@@ -93,13 +127,20 @@ async function maybeTranscribeGpt4o(audioBlob) {
     try { toast('⚠ GPT-4o transcription failed — keeping browser transcript (' + e.message + ')'); } catch {}
   }
 
-  if (seq === cleanupSeq && !isRec) {
+  if (detached) {
+    transcribingTargets.delete(targetId);
+    notifyDictationState();
+  } else if (seq === cleanupSeq && !isRec) {
     if (st) st.textContent = 'Tap to dictate';
     if (ht) ht.textContent = 'Ukrainian or English — report will always be in English';
   }
   transcribed = (typeof correctTranscript === 'function') ? correctTranscript(transcribed) : transcribed;
   transcribed = String(transcribed || '').trim();
-  if (!transcribed || seq !== cleanupSeq || isRec) return;
+  if (!transcribed) return;
+  if (!detached && (seq !== cleanupSeq || isRec)) return;
+  // Re-resolve: the section may have been re-rendered (or removed) meanwhile.
+  const ta = document.getElementById(targetId);
+  if (!ta) return;
 
   const next = (base ? base + ' ' : '') + transcribed;
   if (ta.value === snapshot) {
@@ -478,6 +519,19 @@ async function openPipController() {
         white-space: nowrap; flex-shrink: 0;
       }
       .resume-btn:hover, .pause-btn:hover  { background: #2a2a30; }
+      .next-btn {
+        background: rgba(96,175,255,0.12); color: #60afff;
+        border: 0.5px solid rgba(96,175,255,0.35);
+        padding: 10px 14px; border-radius: 999px;
+        font-size: 13px; font-weight: 500;
+        cursor: pointer; font-family: 'DM Sans', sans-serif;
+        transition: background 120ms, transform 80ms;
+        display: flex; align-items: center; justify-content: center;
+        white-space: nowrap; flex-shrink: 0;
+      }
+      .next-btn:hover  { background: rgba(96,175,255,0.18); }
+      .next-btn:active { transform: scale(.97); }
+      .next-btn:disabled { cursor: default; opacity: .55; }
       .resume-btn:active, .pause-btn:active { transform: scale(.97); }
       .done-btn {
         flex: 1;
@@ -527,6 +581,7 @@ async function openPipController() {
         <div class="body empty" id="pipBody">Waiting for speech…</div>
         <div class="foot">
           <button class="pause-btn" id="pipPauseBtn">⏸ Pause</button>
+          <button class="next-btn" id="pipNextBtn" style="display:none">+ Next issue</button>
           <button class="stop-btn" id="pipStopBtn"><span class="x">■</span> Stop recording</button>
           <button class="resume-btn" id="pipResumeBtn" style="display:none">🎙 Resume</button>
           <button class="done-btn" id="pipDoneBtn" style="display:none">✓ Apply &amp; close</button>
@@ -556,8 +611,25 @@ async function openPipController() {
       // picks them up as baseText, then re-arm recognition. The PiP itself
       // stays open and we flip back to 'rec' mode.
       const body = doc.getElementById('pipBody');
-      if (body) document.getElementById('tin').value = normalizePipEditableText(body.innerText);
+      if (body) dictationTargetEl().value = normalizePipEditableText(body.innerText);
       try { startRec(); } catch {}
+    });
+
+    // Composite Bug only: finish the current issue section and keep
+    // dictating into a fresh "Issue #N+1". While recording the mic switches
+    // live (no gap); from the paused edit view the edits are committed first
+    // and recording resumes into the new section.
+    doc.getElementById('pipNextBtn').addEventListener('click', () => {
+      if (typeof addCompositeIssue !== 'function') return;
+      if (pipMode === 'edit') {
+        const body = doc.getElementById('pipBody');
+        if (body) dictationTargetEl().value = normalizePipEditableText(body.innerText);
+        addCompositeIssue({ focus: false });
+        try { startRec(); } catch {}
+      } else if (isRec) {
+        const id = addCompositeIssue({ focus: false });
+        switchDictationTarget('ci-txt-' + id);
+      }
     });
 
     doc.getElementById('pipDoneBtn').addEventListener('click', () => {
@@ -566,7 +638,7 @@ async function openPipController() {
       // but do it once more to be defensive against missed events) and
       // close the floating window for good.
       const body = doc.getElementById('pipBody');
-      if (body) document.getElementById('tin').value = normalizePipEditableText(body.innerText);
+      if (body) dictationTargetEl().value = normalizePipEditableText(body.innerText);
       closePipController();
     });
 
@@ -576,7 +648,7 @@ async function openPipController() {
     doc.getElementById('pipBody').addEventListener('input', () => {
       if (pipMode !== 'edit') return;
       const body = doc.getElementById('pipBody');
-      document.getElementById('tin').value = normalizePipEditableText(body.innerText);
+      dictationTargetEl().value = normalizePipEditableText(body.innerText);
     });
 
     // If the user closes the PiP window themselves (X button), null out
@@ -673,9 +745,17 @@ function setPipMode(mode) {
   const stopBtn   = doc.getElementById('pipStopBtn');
   const resumeBtn = doc.getElementById('pipResumeBtn');
   const doneBtn   = doc.getElementById('pipDoneBtn');
+  const nextBtn   = doc.getElementById('pipNextBtn');
   const dot       = doc.getElementById('pipRecDot');
   const label     = doc.getElementById('pipHeadLabel');
   if (!body || !pauseBtn || !stopBtn || !resumeBtn || !doneBtn) return;
+
+  // Composite Bug: "+ Next issue" in both modes, and the header names the
+  // issue section being dictated.
+  const composite = typeof compositeMode !== 'undefined' && compositeMode;
+  const issueNo = (composite && typeof compositeIssueNumberFor === 'function') ? compositeIssueNumberFor(dictTargetId) : 0;
+  const issueTag = issueNo ? ' · Issue #' + issueNo : '';
+  if (nextBtn) { nextBtn.style.display = composite ? 'flex' : 'none'; nextBtn.disabled = false; }
 
   if (mode === 'edit') {
     // Pull the full current textarea content into the body so the user
@@ -683,7 +763,7 @@ function setPipMode(mode) {
     // they started dictating AND the freshly transcribed text.
     body.classList.remove('empty');
     body.innerHTML = '';
-    body.textContent = normalizePipEditableText(document.getElementById('tin').value);
+    body.textContent = normalizePipEditableText(dictationTargetEl().value);
     // plaintext-only is a Chromium feature; PiP is Chromium-only too,
     // so this is safe and gives us a textarea-like contenteditable
     // (no rich-text from pastes, Enter inserts a real newline).
@@ -696,7 +776,7 @@ function setPipMode(mode) {
     doneBtn.style.display   = 'flex';
 
     if (dot)   dot.classList.add('paused');
-    if (label) label.textContent = 'Paused — edit transcript, then Resume or Apply';
+    if (label) label.textContent = 'Paused' + issueTag + ' — edit, then Resume or Apply';
 
     // Drop the user straight into editing with the caret at the end —
     // saves a click and matches "I want to fix the last word" intent.
@@ -752,7 +832,9 @@ function setPipMode(mode) {
     stopBtn.disabled  = false; stopBtn.style.opacity = '';
 
     if (dot)   dot.classList.remove('paused', 'transcribing');
-    if (label) label.textContent = gpt4o ? 'Recording — transcribes on Pause / Stop' : 'Recording — live transcript below';
+    if (label) label.textContent = issueTag
+      ? 'Recording' + issueTag + (gpt4o ? ' — transcribes on Pause / Stop' : '')
+      : (gpt4o ? 'Recording — transcribes on Pause / Stop' : 'Recording — live transcript below');
   }
 }
 
@@ -770,6 +852,8 @@ function showPipTranscribing() {
   const body     = doc.getElementById('pipBody');
   if (pauseBtn) { pauseBtn.disabled = true; pauseBtn.innerHTML = '<span class="pip-spin"></span> Transcribing…'; }
   if (stopBtn)  { stopBtn.disabled = true; }
+  const nextBtn = doc.getElementById('pipNextBtn');
+  if (nextBtn)  { nextBtn.disabled = true; }
   if (label)    label.textContent = 'Transcribing with GPT-4o…';
   if (dot)      { dot.classList.remove('paused'); dot.classList.add('transcribing'); }
   if (body)     {
@@ -1101,6 +1185,7 @@ function onRecogStart() {
     : 'Tap again to stop · floating Stop button on your desktop works from any tab';
   document.getElementById('vHt').classList.add('rec');
   setRecordingBadges(true);
+  notifyDictationState();
   // If the user started recording while the tab was already in the
   // background (unlikely but possible via keyboard shortcut), surface
   // the notification immediately so they know it's running.
@@ -1164,7 +1249,8 @@ function onRecogResult(e) {
   if (baseText)       parts.push(baseText);
   if (committedShown) parts.push(committedShown);
   if (interimShown)   parts.push(interimShown);
-  document.getElementById('tin').value = parts.join(' ');
+  const ta = dictationTargetEl();
+  if (ta) ta.value = parts.join(' ');
 
   // Mirror what we just dictated into the floating PiP controller (if
   // any) so the user can read the live transcript from another tab.
@@ -1198,6 +1284,7 @@ function teardownAfterStop() {
   document.getElementById('vHt').classList.remove('rec');
   setRecordingBadges(false);
   closeRecordingNotification();
+  notifyDictationState();
 
   // If the user paused via the PiP Pause button, keep the floating
   // window open and switch it into edit mode so they can fix the
@@ -1246,6 +1333,7 @@ function onRecogError(e) {
   setRecordingBadges(false);
   closeRecordingNotification();
   closePipController();
+  notifyDictationState();
   const msg = describeRecogError(e.error);
   if (msg) {
     document.getElementById('vSt').textContent = 'Tap to dictate';
@@ -1263,7 +1351,8 @@ function startRec() {
   // Reset accumulators — this tap starts a fresh recording from scratch.
   // Bumping cleanupSeq invalidates any in-flight GPT-4o transcription from
   // the previous recording so its late response can't overwrite this one.
-  baseText          = document.getElementById('tin').value;
+  dictTargetId      = currentDictationTargetId();
+  baseText          = dictationTargetEl().value;
   committedFinal    = '';
   prevFrameFinal    = '';
   userStopped       = false;
@@ -1300,6 +1389,36 @@ function startRec() {
     isRec = false;
     document.getElementById('vHt').textContent = 'Mic busy — wait a sec and tap again.';
   }
+}
+
+// Composite Bug: move a LIVE recording to another issue section without
+// stopping the mic. Whatever the current section already shows stays there;
+// in GPT-4o mode the audio recorded so far is cut into its own chunk and
+// transcribed into the section it belongs to, while a fresh chunk starts
+// for the new one on the same held mic stream.
+function switchDictationTarget(newId) {
+  if (!isRec || !newId || newId === dictTargetId) return;
+  const oldId   = dictTargetId;
+  const oldBase = baseText;
+
+  if (gpt4oTranscribeEnabled()) {
+    const prev = audioSession;
+    audioSession = createAudioSession();
+    if (prev) prev.stop().then(blob => maybeTranscribeGpt4o(blob, { targetId: oldId, base: oldBase }));
+  }
+
+  dictTargetId   = newId;
+  baseText       = dictationTargetEl().value;
+  committedFinal = '';
+  // The interim phrase is already shown in the OLD section — silence this
+  // recognizer right away so it can't be finalized into the new one too,
+  // then let scheduleRestart swap in a fresh instance (and reset
+  // prevFrameFinal) for the new section.
+  if (recog) recog.onresult = null;
+  scheduleRestart(0);
+
+  setPipMode('rec');
+  notifyDictationState();
 }
 
 function stopRec() {

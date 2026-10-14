@@ -4,8 +4,13 @@
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bug Report Agent</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2" />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=drag-drop" />
+  <!-- Loaded non-blocking: media="print" keeps it out of the critical render
+       path, the onload swap applies it once it arrives. If the network blocks
+       fonts.googleapis.com the page still paints instantly with the CSS
+       fallback stack instead of hanging on a white screen. -->
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap"
+        rel="stylesheet" media="print" onload="this.media='all'" />
+  <link rel="stylesheet" href="css/styles.css?v=composite" />
 </head>
 <body>
 <div class="app">
@@ -80,9 +85,24 @@
         </div>
       </div>
 
-      <div class="field">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem;flex-wrap:wrap">
+        <span style="font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--dim);text-transform:uppercase;letter-spacing:.07em">Composite bug</span>
+        <div class="lang-toggle" style="background:var(--surface2)">
+          <button class="lang-btn active" id="compOff" onclick="setCompositeMode(false)">Off</button>
+          <button class="lang-btn"        id="compOn"  onclick="setCompositeMode(true)">On</button>
+        </div>
+        <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">several issues in one ticket · each becomes a Jira Expand "Issue #N. Title"</span>
+      </div>
+
+      <div class="field" id="tinField">
         <label class="lbl" for="tin">Or type / paste description</label>
         <textarea id="tin" rows="5" placeholder="Raw notes, user complaint, test steps…"></textarea>
+      </div>
+
+      <div class="field" id="compositeField" style="display:none">
+        <label class="lbl">Issues — type, or dictate with 🎙 on a section · "+ Next issue" in the floating window</label>
+        <div id="compositeIssues"></div>
+        <button class="btn btn-ghost" onclick="addCompositeIssue()" style="width:100%;justify-content:center;border-style:dashed">+ Add issue</button>
       </div>
 
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
@@ -418,22 +438,36 @@
 </div>
 
 <!-- SheetJS (xlsx parser) for the Template page. Loaded from CDN. -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- async, deliberately NOT defer.
+     This is an optional dependency: only the .xlsx upload handler in
+     template.js touches XLSX, and it already guards on
+     `typeof XLSX === 'undefined'`.
+     Plain (no attribute) blocks the HTML parser, so an unreachable
+     cdn.jsdelivr.net stopped the parse right here and none of the local
+     scripts below ever ran - the app never started.
+     `defer` is not enough either: deferred scripts still hold back
+     DOMContentLoaded, and app.js boots the entire app from that event, so
+     the app would stay dead until the CDN request finally timed out.
+     `async` takes it off the critical path completely. Measured with the
+     CDN blackholed: no attribute -> app never becomes usable; async ->
+     usable in 0.16s. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" async></script>
 
 <!-- Scripts are loaded in dependency order. Each file adds functions to the
      global scope, so existing onclick="..." handlers keep working. -->
-<script src="js/state.js?v=sprint-fix"></script>
+<script src="js/state.js?v=composite"></script>
 <script src="js/utils.js?v=label-strip"></script>
 <script src="js/ui.js"></script>
 <script src="js/config.js?v=no-live"></script>
-<script src="js/voice.js?v=audio-session"></script>
-<script src="js/template.js?v=label-strip"></script>
-<script src="js/editable.js?v=drag-drop"></script>
-<script src="js/ai.js?v=label-strip"></script>
-<script src="js/jira.js?v=sprint-fix"></script>
-<script src="js/history.js?v=no-live"></script>
+<script src="js/voice.js?v=composite"></script>
+<script src="js/template.js?v=composite"></script>
+<script src="js/editable.js?v=composite"></script>
+<script src="js/ai.js?v=composite"></script>
+<script src="js/jira.js?v=composite"></script>
+<script src="js/history.js?v=composite"></script>
+<script src="js/composite.js?v=composite"></script>
 <script src="js/session.js?v=audio-session"></script>
 <script src="js/context.js"></script>
-<script src="js/app.js?v=no-live"></script>
+<script src="js/app.js?v=composite"></script>
 </body>
 </html>

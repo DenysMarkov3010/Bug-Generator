@@ -8,6 +8,7 @@ AI-powered bug report generator for QA teams. Dictate or type a bug description 
 - 🔤 **Context words** — a glossary of unique terms (product names, features, jargon). Dictated words that *sound* like a glossary entry are auto-corrected to the exact spelling, so the recognizer invents less. Auto-extracted by **Analyze Template** (incl. Ukrainian phonetic variants) or added manually
 - 🤖 **AI structuring** — Claude (or any OpenRouter model) writes the report in English following your rules
 - 🥒 **Two formats** — **Normal** (template-driven from your analyzed bug format) or **Gherkin** (Scenario / GIVEN / WHEN / THEN)
+- 🧩 **Composite bug** — several related issues in ONE Jira ticket; each issue gets its own section to type or dictate into, and its own collapsible Jira **Expand** titled `Issue #N. <title>`
 - 📝 **Single + Batch sub-tabs** — Report tab splits into **Single Report** (one bug at a time) and **Batch Report** (multiple cards, generate all in parallel)
 - 🎙 **Floating dictation controller** — a Picture-in-Picture window on Batch with `+ Add bug` / `Pause` / `Stop` — dictate Bug #1, tap `+ Add bug`, dictate Bug #2, etc., without ever leaving the floating window
 - ✏️ **Inline editing** — every generated field and template-driven section is click-to-edit on Report, Batch and History. Copy / Push to Jira always use the latest edits
@@ -140,6 +141,27 @@ Scenario-driven shape, useful for BDD-style projects:
 
 The choice is persisted in `localStorage` (`bra_format` for Report,
 `bra_session_format` for Session) so reload doesn't reset it.
+
+## Composite bug (several issues in one ticket)
+
+**📝 Single Report → Composite bug: On** swaps the description box for a
+list of **Issue #1, Issue #2, …** sections (`+ Add issue` / `×` to manage).
+Fill each one separately:
+
+- **Type** into the section, or
+- **Dictate** — 🎙 on a section records into it (tap a different section's
+  🎙 while recording to move the mic there); the big mic records into the
+  highlighted section. In the floating window, **+ Next issue** finishes the
+  current issue and keeps recording into a new one — no need to stop.
+
+**Generate** makes one AI call for all issues and returns an umbrella
+**Summary** (the Jira title) plus one block per issue with its own title and
+full body (Preconditions / Steps / AR / ER, or the Gherkin shape). Every block
+is editable like a normal report. **🚀 Push to Jira** writes each issue as a
+Jira **Expand** element titled `Issue #N. <title>`, with the issue body
+inside; Environment, Custom fields, Severity and Linked work items stay
+shared at the ticket level. Copy and History handle composite reports too.
+The toggle is remembered (`bra_composite`); the issue sections are not.
 
 ## Batch Report (queue multiple bugs)
 
@@ -418,6 +440,7 @@ bug-report-agent/
     ├── ai.js             # generate() — Anthropic / OpenRouter — Normal + Gherkin formats + ticket context
     ├── jira.js           # jiraRequest() + pushToJira() + testJiraConnection() + ADF builders (Normal + Gherkin)
     ├── history.js        # localStorage 'bra_history' — addToHistory, render, re-push, delete
+    ├── composite.js      # 🧩 Composite bug — issue sections, per-section dictation, generateComposite()
     ├── session.js        # 🗂 Batch Report — bug cards, per-card mic, PiP, parallel generate
     ├── context.js        # 🔤 Context words glossary + correctTranscript() fuzzy auto-correction
     └── app.js            # DOMContentLoaded bootstrap + cfg migrations
@@ -440,6 +463,8 @@ bug-report-agent/
 | Jira request body / field mapping         | `js/jira.js` → `pushToJira()`                     |
 | Jira description formatting — Normal      | `js/jira.js` → `buildAdfDescription()`            |
 | Jira description formatting — Gherkin     | `js/jira.js` → `buildAdfDescriptionGherkin()`     |
+| Jira description formatting — Composite   | `js/jira.js` → `buildAdfDescriptionComposite()`   |
+| Composite bug input / generate            | `js/composite.js`                                 |
 | Whitelisted Jira proxy endpoints          | `api/jira.js` → `allowed` regex                   |
 | Result card layout — Normal               | `js/ai.js` → `renderResultNormal()`               |
 | Result card layout — Gherkin              | `js/ai.js` → `renderResultGherkin()`              |

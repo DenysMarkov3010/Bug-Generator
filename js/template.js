@@ -1022,6 +1022,8 @@ function useExample() {
   const ex = cfg.voiceExamples || {};
   const txt = (ex[exLang] || '').trim();
   if (!txt) { toast('⚠ No example to copy'); return; }
-  document.getElementById('tin').value = txt;
+  // Composite Bug on → the example goes into the active issue section.
+  const target = typeof currentDictationTargetId === 'function' ? currentDictationTargetId() : 'tin';
+  (document.getElementById(target) || document.getElementById('tin')).value = txt;
   toast('✓ Example copied to input');
 }

@@ -69,6 +69,7 @@ function renderHistory() {
     const fmtBadge = item.format === 'gherkin'
       ? `<span style="font-size:10px;font-family:'IBM Plex Mono',monospace;padding:2px 7px;border-radius:999px;background:var(--surface3);color:var(--muted)">Gherkin</span>`
       : '';
+    const compositeBadge = typeof compositeBadgeHtml === 'function' ? compositeBadgeHtml(item.report) : '';
     const ticketBadge = item.ticketKey
       ? `<span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--muted)">${esc(item.ticketKey)}</span>`
       : '';
@@ -79,6 +80,7 @@ function renderHistory() {
         <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
           <span class="sev sev-edit sev-${esc(item.severity)}" onclick="event.stopPropagation();cycleSeverity(this)" title="Click to change severity">${esc(item.severity)}</span>
           ${fmtBadge}
+          ${compositeBadge}
           <span style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(item.summary)}</span>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
@@ -149,7 +151,9 @@ function copyHistoryItem(i) {
   if (!item) return;
   const r = item.report || {};
   let txt;
-  if (item.format === 'gherkin') {
+  if (Array.isArray(r.issues)) {
+    txt = buildCompositePlainText(r, item.format === 'gherkin');
+  } else if (item.format === 'gherkin') {
     txt = `Summary: ${r.summary}
 Severity: ${r.severity}
 Environment: ${r.environment || 'N/A'}
