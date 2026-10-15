@@ -32,6 +32,20 @@ const MIN_FRAMES_PER_VIDEO = 6;
 const VIDEO_EXT = /\.(mp4|m4v|mov|webm|mkv|avi|wmv)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
+// How each file is shown inside the Jira description (Jira's "Edit image"
+// width / height + alignment). Same defaults for every file; editable per
+// file in the result card.
+const MEDIA_DEFAULT_WIDTH  = 1178;
+const MEDIA_DEFAULT_HEIGHT = 623;
+const MEDIA_DEFAULT_ALIGN  = 'align-start';
+const MEDIA_ALIGN_OPTIONS = [
+  { id: 'align-start', title: 'Align left' },
+  { id: 'center',      title: 'Align center' },
+  { id: 'align-end',   title: 'Align right' },
+  { id: 'wrap-left',   title: 'Wrap left' },
+  { id: 'wrap-right',  title: 'Wrap right' },
+];
+
 function attachmentKind(file) {
   if (/^image\//.test(file.type) || IMAGE_EXT.test(file.name)) return 'image';
   if (/^video\//.test(file.type) || VIDEO_EXT.test(file.name)) return 'video';
@@ -375,7 +389,8 @@ function applyAttachmentsToReport(r, prepared, isGherkin) {
   const valid = new Set(attachmentSlotOptions(isGherkin).map(o => o.id));
   const slot = v => (valid.has(String(v || '')) ? String(v) : defaultAttachmentSlot(isGherkin));
   const files = prepared.files;
-  const meta = files.map((f, i) => ({ n: i + 1, name: f.name, kind: f.kind, size: f.size, issue: 0, after: slot(r.attachmentsAfter) }));
+  const meta = files.map((f, i) => ({ n: i + 1, name: f.name, kind: f.kind, size: f.size, issue: 0, after: slot(r.attachmentsAfter),
+    width: MEDIA_DEFAULT_WIDTH, height: MEDIA_DEFAULT_HEIGHT, align: MEDIA_DEFAULT_ALIGN }));
 
   if (Array.isArray(r.issues)) {
     const taken = new Set();
@@ -414,9 +429,16 @@ function renderAttachmentsBlock(r, resultId, isGherkin) {
     const afterSel = `<select onchange="updateResultAttachment('${esc(resultId)}', ${i}, 'after', this.value)" title="Embedded in Jira right after this section">
         ${opts.map(o => `<option value="${esc(o.id)}"${o.id === a.after ? ' selected' : ''}>after ${esc(o.title)}</option>`).join('')}
       </select>`;
+    const view = mediaViewOf(a);
+    const sizeIn = (field, label) => `<label class="att-size" title="${label} in Jira, px">${label}
+        <input type="number" min="1" step="1" value="${view[field]}" onchange="updateResultAttachment('${esc(resultId)}', ${i}, '${field}', this.value)"/>
+      </label>`;
+    const alignSel = `<select onchange="updateResultAttachment('${esc(resultId)}', ${i}, 'align', this.value)" title="Alignment in Jira">
+        ${MEDIA_ALIGN_OPTIONS.map(o => `<option value="${o.id}"${o.id === view.align ? ' selected' : ''}>${o.title}</option>`).join('')}
+      </select>`;
     return `<div class="att-row">
       <span class="att-row-name" title="${esc(a.name)}">${a.kind === 'video' ? '🎬' : '🖼'} ${esc(a.name)}</span>
-      ${issueSel}${afterSel}
+      ${issueSel}${afterSel}${sizeIn('width', 'Width')}${sizeIn('height', 'Height')}${alignSel}
       <button class="rule-del" onclick="removeResultAttachment('${esc(resultId)}', ${i})" title="Don't attach to Jira">×</button>
     </div>`;
   }).join('');
@@ -445,7 +467,9 @@ function updateResultAttachment(resultId, idx, field, value) {
   const target = resolveResultTarget(resultId);
   const a = target && target.obj && Array.isArray(target.obj.attachments) && target.obj.attachments[idx];
   if (!a) return;
-  a[field] = field === 'issue' ? parseInt(value, 10) || 0 : String(value);
+  if (field === 'issue') a[field] = parseInt(value, 10) || 0;
+  else if (field === 'width' || field === 'height') a[field] = parseInt(value, 10) > 0 ? parseInt(value, 10) : mediaViewOf({})[field];
+  else a[field] = String(value);
   if (target.onUpdate) target.onUpdate();
 }
 
@@ -462,8 +486,20 @@ function removeResultAttachment(resultId, idx) {
 }
 
 // ── Push to Jira ──────────────────────────────────────────────────────────
-function mediaSingleNode(mediaId) {
-  return { type: 'mediaSingle', attrs: { layout: 'center' }, content: [{ type: 'media', attrs: { type: 'file', id: mediaId, collection: '' } }] };
+// Width / height / alignment of a file — defaults for older History items.
+function mediaViewOf(meta) {
+  const w = parseInt(meta && meta.width, 10), h = parseInt(meta && meta.height, 10);
+  const align = MEDIA_ALIGN_OPTIONS.some(o => o.id === (meta && meta.align)) ? meta.align : MEDIA_DEFAULT_ALIGN;
+  return { width: w > 0 ? w : MEDIA_DEFAULT_WIDTH, height: h > 0 ? h : MEDIA_DEFAULT_HEIGHT, align };
+}
+
+function mediaSingleNode(mediaId, meta) {
+  const v = mediaViewOf(meta);
+  return {
+    type: 'mediaSingle',
+    attrs: { layout: v.align, width: v.width, widthType: 'pixel' },
+    content: [{ type: 'media', attrs: { type: 'file', id: mediaId, collection: '', width: v.width, height: v.height } }],
+  };
 }
 
 function attachmentLinkNode(att) {
@@ -475,7 +511,7 @@ function attachmentLinkNode(att) {
 function buildMediaPlan(r, uploaded, linksOnly) {
   const plan = { main: {}, issues: [] };
   uploaded.forEach(u => {
-    const node = (u.mediaId && !linksOnly) ? mediaSingleNode(u.mediaId) : attachmentLinkNode(u.att);
+    const node = (u.mediaId && !linksOnly) ? mediaSingleNode(u.mediaId, u.meta) : attachmentLinkNode(u.att);
     let slots = plan.main;
     if (Array.isArray(r.issues)) {
       const k = Math.min(Math.max(0, u.meta.issue || 0), r.issues.length - 1);

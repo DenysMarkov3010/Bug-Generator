@@ -271,3 +271,6 @@ a.lwi-open:hover{background:var(--accent-dim)}
 .att-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
 .att-row-name{flex:1;min-width:0;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .att-row select{font-size:12px;padding:5px 8px;font-family:'IBM Plex Mono',monospace;color:var(--muted);max-width:220px}
+.att-row{flex-wrap:wrap}
+.att-size{display:flex;align-items:center;gap:4px;font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)}
+.att-size input{width:70px;font-size:12px;padding:5px 6px;font-family:'IBM Plex Mono',monospace}
