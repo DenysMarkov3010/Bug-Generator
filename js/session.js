@@ -82,10 +82,10 @@ function renderCards() {
       // While GPT-4o still processes this card's audio, say so instead of
       // the misleading "(no dictation captured)" — the text arrives shortly.
       const preview = card.transcribing
-        ? '⏳ Transcribing with GPT-4o…'
-        : ((card.text || '').trim().slice(0, 140) || '(no dictation captured)');
+        ? '⏳ Transcribing…'
+        : ((card.text || '').trim().slice(0, 140) || (card._failedAudio ? '⚠ Transcription failed — tap to retry' : '(no dictation captured)'));
       const more = (!card.transcribing && (card.text || '').length > 140) ? '…' : '';
-      const tag = card.result ? ' · generated' : (card.transcribing ? ' · transcribing…' : ' · dictated');
+      const tag = card.result ? ' · generated' : (card.transcribing ? ' · transcribing…' : (card._failedAudio ? ' · ⚠ transcription failed' : ' · dictated'));
       return `
       <div class="card collapsed-card" id="card-${card.id}" onclick="expandCard(${card.id})" style="margin-bottom:.75rem;cursor:pointer">
         <div class="card-head" style="padding:8px 12px">
@@ -109,6 +109,11 @@ function renderCards() {
           <button class="mic-btn ${card.isRec ? 'rec' : ''}" id="mic-${card.id}" onclick="toggleCardRec(${card.id})" style="width:42px;height:42px;font-size:18px;flex-shrink:0">${card.isRec ? '⏹' : '🎙'}</button>
           <textarea id="txt-${card.id}" rows="3" placeholder="Describe bug #${idx + 1}…" style="flex:1" oninput="updateCardText(${card.id}, this.value)">${esc(card.text)}</textarea>
         </div>
+        ${card._failedAudio ? `<div class="v-retry" style="display:flex;margin:-2px 0 10px">
+          <span>⚠ Transcription failed — audio kept</span>
+          <button class="btn btn-ghost btn-sm" onclick="retryCardTranscription(${card.id})">↻ Retry</button>
+          <button class="rule-del" onclick="discardCardTranscription(${card.id})" title="Discard the recording">×</button>
+        </div>` : ''}
         ${card.result ? renderCardResult(card) : ''}
       </div>
     </div>`;
@@ -182,6 +187,7 @@ function startCardRec(card) {
 
   let baseTxt        = card.text || '';
   let committed      = '';
+  if (typeof ctxStartCorrectionPass === 'function') ctxStartCorrectionPass();
   let prevFrameFinal = '';
   let userStop       = false;
   let stopDoneResolve = null;
@@ -308,7 +314,7 @@ function stopCardRec(card) {
 
 async function maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob) {
   if (!audioBlob || !audioBlob.size) return;
-  if (!apiKey || typeof transcribeWithGpt4o !== 'function') return;
+  if (!apiKey || typeof transcribeSpeech !== 'function') return;
 
   // Mark the card as in-flight and repaint statuses everywhere — the Batch
   // page shows "⏳ transcribing…" and the PiP accordion shows a blue
@@ -321,14 +327,15 @@ async function maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob) {
   try {
     const snapshot = card.text || '';
     const btn = document.getElementById('mic-' + card.id);
-    if (btn && !card.isRec) { btn.textContent = '🤖'; btn.title = 'Transcribing with GPT-4o…'; }
+    if (btn && !card.isRec) { btn.textContent = '🤖'; btn.title = 'Transcribing…'; }
 
     let transcribed = '';
     try {
-      const hint = typeof transcribeLanguageHint === 'function' ? transcribeLanguageHint(sessionLang) : '';
-      transcribed = await transcribeWithGpt4o(audioBlob, hint);
+      transcribed = await transcribeSpeech(audioBlob, { recLang: sessionLang, prevText: baseTxt });
     } catch (e) {
-      try { toast('⚠ GPT-4o transcription failed — keeping browser transcript (' + e.message + ')'); } catch {}
+      // Keep the audio on the card — ↻ Retry there instead of re-dictating.
+      card._failedAudio = { blob: audioBlob, recLang: sessionLang, prevText: baseTxt };
+      try { toast('⚠ Transcription failed — audio kept, tap ↻ Retry on the card (' + e.message + ')'); } catch {}
     }
 
     const btnAfter = document.getElementById('mic-' + card.id);
@@ -342,7 +349,7 @@ async function maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob) {
     card.text = (baseTxt ? baseTxt + ' ' : '') + transcribed;
     const ta = document.getElementById('txt-' + card.id);
     if (ta) ta.value = card.text;
-    try { toast('✓ GPT-4o transcript applied'); } catch {}
+    try { toast('✓ Transcript applied'); } catch {}
   } finally {
     // Flip ⏳ → DICTATED (or back to EMPTY on failure) on both surfaces,
     // regardless of which early-return path was taken.
@@ -350,6 +357,36 @@ async function maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob) {
     renderCards();
     _refreshSessionPipStatuses();
   }
+}
+
+// ↻ Retry on a card whose transcription failed: re-send the kept audio and
+// append the result to whatever the card holds now.
+async function retryCardTranscription(id) {
+  const card = sessionCards.find(c => c.id === id);
+  if (!card || !card._failedAudio || card.transcribing) return;
+  const f = card._failedAudio;
+  card.transcribing = true;
+  renderCards();
+  try {
+    let text = await transcribeSpeech(f.blob, { recLang: f.recLang, prevText: f.prevText });
+    card._failedAudio = null;
+    text = String((typeof correctTranscript === 'function') ? correctTranscript(text) : text || '').trim();
+    if (text) {
+      card.text = ((card.text || '').trim() ? card.text.trim() + ' ' : '') + text;
+      toast('✓ Transcript applied');
+    }
+  } catch (e) {
+    toast('⚠ Retry failed: ' + e.message);
+  } finally {
+    card.transcribing = false;
+    renderCards();
+    _refreshSessionPipStatuses();
+  }
+}
+
+function discardCardTranscription(id) {
+  const card = sessionCards.find(c => c.id === id);
+  if (card) { card._failedAudio = null; renderCards(); }
 }
 
 // Repaint the PiP accordion so per-card status pills stay truthful while a
@@ -948,13 +985,13 @@ function showSessionPipTranscribing() {
   const body  = doc.getElementById('spipBody');
   if (pause) { pause.disabled = true; pause.innerHTML = '<span class="pip-spin"></span> Transcribing…'; }
   if (stop)  { stop.disabled = true; }
-  if (label) label.textContent = 'Transcribing with GPT-4o…';
+  if (label) label.textContent = 'Transcribing…';
   if (dot)   { dot.classList.remove('paused'); dot.classList.add('transcribing'); }
   if (body)  {
     body.classList.add('empty');
     body.innerHTML =
       '<div class="pip-rec"><span class="pip-spin pip-spin-lg"></span>' +
-      '<div class="pip-rec-label">Transcribing with GPT-4o…</div></div>';
+      '<div class="pip-rec-label">Transcribing…</div></div>';
   }
 }
 

@@ -162,27 +162,40 @@ function refreshCompositeDictationState() {
 async function generateComposite() {
   syncCompositeFromDom();
   const filled = compositeIssues.map(it => (it.text || '').trim()).filter(Boolean);
-  if (!filled.length) { showErr('Describe at least one issue — type or dictate into the Issue sections.'); return; }
+  const withFiles = typeof hasReportAttachments === 'function' && hasReportAttachments();
+  if (!filled.length && !withFiles) { showErr('Describe at least one issue — type or dictate into the Issue sections, or attach screenshots / recordings.'); return; }
   if (!apiKey) { promptKey(); return; }
 
   const btn = document.getElementById('genBtn');
   btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span> Analyzing ${filled.length} issue${filled.length === 1 ? '' : 's'}…`;
+  btn.innerHTML = `<span class="spinner"></span> Analyzing ${filled.length || ''} issue${filled.length === 1 ? '' : 's'}…`;
   document.getElementById('errArea').innerHTML = '';
   document.getElementById('resArea').innerHTML = '';
 
   const isGherkin = reportFormat === 'gherkin';
-  const sys = buildSystemPrompt({ isGherkin, composite: true });
-  const userText = filled.map((t, i) => `Issue #${i + 1}:\n${t}`).join('\n\n');
+  // Without written issues the model splits the attachments into issues
+  // itself (one per highlighted area / separate problem).
+  const userText = filled.length
+    ? filled.map((t, i) => `Issue #${i + 1}:\n${t}`).join('\n\n')
+    : 'No written issues — identify each separate issue shown in the attachments (one per highlighted area or distinct problem) and number them Issue #1, Issue #2, …';
 
   try {
+    const files = withFiles
+      ? await prepareAttachmentsForAi(msg => { btn.innerHTML = `<span class="spinner"></span> ${esc(msg)}`; })
+      : null;
+    if (files) btn.innerHTML = '<span class="spinner"></span> Analyzing…';
+    const sys = buildSystemPrompt({ isGherkin, composite: true, attachments: files ? files.prompt : '' });
     // Every issue is a full report body — scale the output budget so the
     // JSON isn't cut off mid-way.
-    const raw = await callAi(sys, userText, { maxTokens: Math.min(8000, 1600 * Math.max(2, filled.length)) });
+    const raw = await callAi(sys, userText, {
+      maxTokens: Math.min(8000, 1600 * Math.max(2, filled.length)),
+      images: files ? files.images : [],
+    });
     lastRep = normalizeCompositeResult(raw, isGherkin);
+    if (files) applyAttachmentsToReport(lastRep, files, isGherkin);
     renderResult(lastRep);
     addToHistory(lastRep, reportFormat);
-    if (lastRep.issues.length !== filled.length) {
+    if (filled.length && lastRep.issues.length !== filled.length) {
       toast(`⚠ You described ${filled.length} issues but the AI returned ${lastRep.issues.length} — check the report`);
     }
   } catch (e) {
@@ -198,6 +211,7 @@ async function generateComposite() {
 function clearReportInput() {
   document.getElementById('tin').value = '';
   document.getElementById('resArea').innerHTML = '';
+  if (typeof clearAttachments === 'function') clearAttachments();
   if (!compositeMode) return;
   if (typeof isRec !== 'undefined' && isRec && String(dictTargetId).startsWith('ci-txt-')) stopRec();
   compositeIssues = [{ id: ++compositeIssueCounter, text: '' }, { id: ++compositeIssueCounter, text: '' }];

@@ -103,7 +103,7 @@ let cleanupSeq = 0;
 async function maybeTranscribeGpt4o(audioBlob, detached) {
   if (!audioBlob || !audioBlob.size) return;
   if (!apiKey) return;
-  if (typeof transcribeWithGpt4o !== 'function') return;
+  if (typeof transcribeSpeech !== 'function') return;
   const targetId = detached ? detached.targetId : dictTargetId;
   if (!document.getElementById(targetId)) return;
 
@@ -116,15 +116,17 @@ async function maybeTranscribeGpt4o(audioBlob, detached) {
     transcribingTargets.add(targetId);
     notifyDictationState();
   } else {
-    if (st) st.textContent = 'Transcribing with GPT-4o…';
-    if (ht) ht.textContent = 'OpenRouter is transcribing the recorded audio — browser preview stays until it returns';
+    if (st) st.textContent = 'Transcribing with GPT Transcribe…';
+    if (ht) ht.textContent = 'OpenRouter is transcribing the recorded audio';
   }
 
   let transcribed = '';
   try {
-    transcribed = await transcribeWithGpt4o(audioBlob, transcribeLanguageHint(lang));
+    transcribed = await transcribeSpeech(audioBlob, { recLang: lang, prevText: base });
   } catch (e) {
-    try { toast('⚠ GPT-4o transcription failed — keeping browser transcript (' + e.message + ')'); } catch {}
+    // Keep the audio so the user can retry instead of re-dictating.
+    rememberFailedTranscription({ blob: audioBlob, targetId, recLang: lang, prevText: base });
+    try { toast('⚠ Transcription failed — audio kept, tap ↻ Retry (' + e.message + ')'); } catch {}
   }
 
   if (detached) {
@@ -145,13 +147,96 @@ async function maybeTranscribeGpt4o(audioBlob, detached) {
   const next = (base ? base + ' ' : '') + transcribed;
   if (ta.value === snapshot) {
     ta.value = next;
-    try { toast('✓ GPT-4o transcript applied'); } catch {}
+    try { toast('✓ Transcript applied'); } catch {}
   } else {
     const currentTail = (base && snapshot.startsWith(base)) ? snapshot.slice(base.length).trim() : snapshot.trim();
     if (currentTail && ta.value.includes(currentTail)) {
       ta.value = ta.value.replace(currentTail, transcribed);
-      try { toast('✓ GPT-4o transcript applied'); } catch {}
+      try { toast('✓ Transcript applied'); } catch {}
     }
+  }
+}
+
+// ── failed transcriptions (Single Report) ─────────────────────────────────
+// In GPT Transcribe mode the audio IS the text — a failed request used to
+// mean re-dictating. The blob is kept instead and the voice area offers
+// ↻ Retry, which appends the result to the section it was recorded for.
+const failedTranscriptions = [];
+
+function rememberFailedTranscription(item) {
+  failedTranscriptions.push(item);
+  renderFailedTranscriptions();
+}
+
+function renderFailedTranscriptions() {
+  const box = document.getElementById('vRetry');
+  if (!box) return;
+  const n = failedTranscriptions.length;
+  box.style.display = n ? 'flex' : 'none';
+  const lbl = document.getElementById('vRetryLbl');
+  if (lbl) lbl.textContent = n === 1 ? '⚠ Transcription failed — audio kept' : `⚠ ${n} transcriptions failed — audio kept`;
+}
+
+async function retryFailedTranscriptions() {
+  const btn = document.getElementById('vRetryBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Retrying…'; }
+  for (const item of [...failedTranscriptions]) {
+    let text;
+    try {
+      text = await transcribeSpeech(item.blob, { recLang: item.recLang, prevText: item.prevText });
+    } catch (e) {
+      try { toast('⚠ Retry failed: ' + e.message); } catch {}
+      break;   // service still down — keep this and the rest for later
+    }
+    failedTranscriptions.splice(failedTranscriptions.indexOf(item), 1);
+    text = String((typeof correctTranscript === 'function') ? correctTranscript(text) : text || '').trim();
+    const ta = document.getElementById(item.targetId) || document.getElementById('tin');
+    if (text && ta) {
+      ta.value = (ta.value.trim() ? ta.value.trim() + ' ' : '') + text;
+      try { toast('✓ Transcript applied'); } catch {}
+    }
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Retry'; }
+  renderFailedTranscriptions();
+}
+
+function discardFailedTranscriptions() {
+  failedTranscriptions.length = 0;
+  renderFailedTranscriptions();
+}
+
+// ── silence check ─────────────────────────────────────────────────────────
+// Same gate as Meet Listener: a recording whose peak stays under −60 dBFS,
+// or with less than 0.4 s of audible sound, is not worth a request — and
+// transcription models tend to "hear" a stock phrase in pure silence.
+// Audible = 20 ms frames above −45 dBFS. Any decode problem → assume speech
+// (better an extra request than a dropped dictation).
+const SILENT_PEAK_DB = -60;
+const SPEECH_FRAME_DB = -45;
+const MIN_SPEECH_S = 0.4;
+
+async function audioHasSpeech(blob) {
+  try {
+    const ctx = new OfflineAudioContext(1, 1, 16000);
+    const audio = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const data = audio.getChannelData(0);
+    const frame = Math.max(1, Math.round(audio.sampleRate * 0.02));
+    let peak = 0, loudFrames = 0;
+    for (let i = 0; i < data.length; i += frame) {
+      let sum = 0;
+      const end = Math.min(data.length, i + frame);
+      for (let j = i; j < end; j++) {
+        const v = data[j];
+        sum += v * v;
+        if (v > peak) peak = v; else if (-v > peak) peak = -v;
+      }
+      const rmsDb = 20 * Math.log10(Math.sqrt(sum / (end - i)) || 1e-9);
+      if (rmsDb > SPEECH_FRAME_DB) loudFrames++;
+    }
+    const peakDb = 20 * Math.log10(peak || 1e-9);
+    return peakDb >= SILENT_PEAK_DB && loudFrames * 0.02 >= MIN_SPEECH_S;
+  } catch {
+    return true;
   }
 }
 
@@ -854,13 +939,13 @@ function showPipTranscribing() {
   if (stopBtn)  { stopBtn.disabled = true; }
   const nextBtn = doc.getElementById('pipNextBtn');
   if (nextBtn)  { nextBtn.disabled = true; }
-  if (label)    label.textContent = 'Transcribing with GPT-4o…';
+  if (label)    label.textContent = 'Transcribing…';
   if (dot)      { dot.classList.remove('paused'); dot.classList.add('transcribing'); }
   if (body)     {
     body.classList.add('empty');
     body.innerHTML =
       '<div class="pip-rec"><span class="pip-spin pip-spin-lg"></span>' +
-      '<div class="pip-rec-label">Transcribing with GPT-4o…</div></div>';
+      '<div class="pip-rec-label">Transcribing…</div></div>';
   }
 }
 
@@ -883,6 +968,7 @@ function showPipTranscribing() {
 let micStream = null;
 let micCtx    = null;
 let micTimer  = 0;
+let recStream = null;   // micStream after the 80 Hz high-pass (see recordingStream)
 // GPT-4o Transcribe audio capture (see createAudioSession). Batch cards hold
 // their own session per card; this slot belongs to the Single-Report mic.
 let audioSession = null;
@@ -911,7 +997,7 @@ async function acquireMicStream() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
   } catch { return; }
 
@@ -961,6 +1047,29 @@ async function acquireMicStream() {
       if (rms > 0.045) lastLoudAt = Date.now();
     }, 70);   // 70ms ≈ 14fps — smooth enough for the bars without churn
   } catch {} // meter is optional — keep-alive still holds the device
+}
+
+// What GPT Transcribe gets: the mic through an 80 Hz high-pass (same cut as
+// Meet Listener's ffmpeg chain) — drops desk thumps, fan / AC hum and
+// handling rumble that carry no speech but confuse the recognizer. Built
+// once per held mic stream on the meter's AudioContext. Falls back to the
+// raw stream whenever the graph can't run (no context yet, or suspended —
+// a suspended context would record pure silence).
+function recordingStream() {
+  if (recStream) return recStream;
+  if (!micCtx || micCtx.state !== 'running') return micStream;
+  try {
+    const hp = micCtx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 80;
+    const dest = micCtx.createMediaStreamDestination();
+    dest.channelCount = 1;
+    micCtx.createMediaStreamSource(micStream).connect(hp).connect(dest);
+    recStream = dest.stream;
+    return recStream;
+  } catch {
+    return micStream;
+  }
 }
 
 // ── Siri-style equalizer (GPT-4o recording visualizer) ────────────────────
@@ -1028,6 +1137,7 @@ function releaseMicStream() {
     micStream = null;
   }
   if (micCtx) { try { micCtx.close(); } catch {} micCtx = null; }
+  recStream = null;
   ['vLive', 'sLive'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -1107,18 +1217,14 @@ function gpt4oTranscribeEnabled() {
   return cfg.voiceAiCleanup === 'gpt4o-transcribe';
 }
 
-function transcribeLanguageHint(recLang) {
-  return String(recLang || '').toLowerCase().startsWith('uk') ? 'uk'
-    : String(recLang || '').toLowerCase().startsWith('en') ? 'en'
-      : '';
-}
-
 // Create an INDEPENDENT audio-recording session on the held mic stream.
 // Each session owns its MediaRecorder and chunk buffer in a closure, so
 // overlapping recordings can't clobber each other — critical for the Batch
 // "+ Add bug" flow, where card N's audio is still being finalized while
 // card N+1 already records (multiple MediaRecorders on one MediaStream are
 // allowed). Returns { stop({discard}) → Promise<Blob|null> } or null.
+// Records the high-passed stream (see recordingStream) at a fixed 64 kbit/s
+// — Chrome's default Opus bitrate varies and can drop low for voice.
 function createAudioSession() {
   if (!gpt4oTranscribeEnabled() || !micStream || typeof MediaRecorder === 'undefined') return null;
   try {
@@ -1129,7 +1235,9 @@ function createAudioSession() {
       'audio/ogg',
     ].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
     const chunks = [];
-    const rec = preferred ? new MediaRecorder(micStream, { mimeType: preferred }) : new MediaRecorder(micStream);
+    const opts = { audioBitsPerSecond: 64000 };
+    if (preferred) opts.mimeType = preferred;
+    const rec = new MediaRecorder(recordingStream(), opts);
     rec.ondataavailable = e => {
       if (e.data && e.data.size) chunks.push(e.data);
     };
@@ -1181,7 +1289,7 @@ function onRecogStart() {
   const gpt4o = (cfg.voiceAiCleanup === 'gpt4o-transcribe');
   document.getElementById('vSt').textContent = gpt4o ? '🔴 Recording…' : 'Listening…';
   document.getElementById('vHt').textContent = gpt4o
-    ? 'Speak freely — GPT-4o transcribes your audio when you Pause or Stop'
+    ? 'Speak freely — GPT Transcribe turns your audio into text when you Pause or Stop'
     : 'Tap again to stop · floating Stop button on your desktop works from any tab';
   document.getElementById('vHt').classList.add('rec');
   setRecordingBadges(true);
@@ -1353,6 +1461,7 @@ function startRec() {
   // the previous recording so its late response can't overwrite this one.
   dictTargetId      = currentDictationTargetId();
   baseText          = dictationTargetEl().value;
+  if (typeof ctxStartCorrectionPass === 'function') ctxStartCorrectionPass();
   committedFinal    = '';
   prevFrameFinal    = '';
   userStopped       = false;

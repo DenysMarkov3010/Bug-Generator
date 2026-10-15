@@ -5,9 +5,11 @@ AI-powered bug report generator for QA teams. Dictate or type a bug description 
 ## Features
 
 - 🎙 **Voice input** — dictate in Ukrainian or English via the built-in Web Speech API (free, live transcript, runs entirely in the browser)
+- 🤖 **GPT Transcribe dictation** — `openai/gpt-transcribe` with Ukrainian + English, your terms as keyword hints, silence skipped, retries and ↻ Retry without re-dictating
 - 🔤 **Context words** — a glossary of unique terms (product names, features, jargon). Dictated words that *sound* like a glossary entry are auto-corrected to the exact spelling, so the recognizer invents less. Auto-extracted by **Analyze Template** (incl. Ukrainian phonetic variants) or added manually
 - 🤖 **AI structuring** — Claude (or any OpenRouter model) writes the report in English following your rules
 - 🥒 **Two formats** — **Normal** (template-driven from your analyzed bug format) or **Gherkin** (Scenario / GIVEN / WHEN / THEN)
+- 📎 **Screenshots & screen recordings** — drop / paste images or videos (Windows MP4, macOS MOV, WebM…); the AI reads steps from the recording, text optional; files are uploaded to Jira and embedded where your AI rules put them
 - 🧩 **Composite bug** — several related issues in ONE Jira ticket; each issue gets its own section to type or dictate into, and its own collapsible Jira **Expand** titled `Issue #N. <title>`
 - 📝 **Single + Batch sub-tabs** — Report tab splits into **Single Report** (one bug at a time) and **Batch Report** (multiple cards, generate all in parallel)
 - 🎙 **Floating dictation controller** — a Picture-in-Picture window on Batch with `+ Add bug` / `Pause` / `Stop` — dictate Bug #1, tap `+ Add bug`, dictate Bug #2, etc., without ever leaving the floating window
@@ -77,6 +79,31 @@ in the browser. Chrome / Edge are the only browsers that support it.
 Accuracy for unique/technical terms is improved by the **Context words**
 glossary (see below).
 
+### GPT Transcribe mode (Setup → Dictation)
+
+Records the audio instead of showing a live draft and turns it into text on
+Pause / Stop with OpenRouter's **`openai/gpt-transcribe`** (needs the
+OpenRouter provider + key). The request mirrors the Meet Listener app:
+
+- **Two languages** — Ukrainian dictation is sent as `uk` + `en`, so English
+  UI terms stay in Latin ("Checkout page", not «чекаут пейдж»). EN = `en` only.
+- **Keyword hints** — Context-word terms and Auto-replacement targets are
+  sent as `keywords[]`, so they're spelled right in the first place.
+- **Context prompt** — the tail of what you already dictated (continuity
+  across Pause / Resume), or a short style sample showing English UI terms
+  in Latin for the first chunk.
+- **Cleaner audio** — 80 Hz high-pass (drops hum / desk thumps), mono,
+  fixed 64 kbit/s Opus.
+- **Silence isn't sent** — a recording with no audible speech (peak below
+  −60 dB or under 0.4 s of sound) is skipped: such models tend to "hear" a
+  stock phrase in silence.
+- **Retries** — network errors / 408 / 429 / 5xx are retried 3× (1s, 3s,
+  6s). If it still fails the audio is kept: **↻ Retry** in the voice area
+  (Single Report) or on the card (Batch) re-sends it — no re-dictating.
+
+If the service rejects the keyword/language hints, the app falls back to a
+plain `language` + `prompt` request for the rest of the session.
+
 ### Context words (improve recognition of unique terms)
 
 The browser speech engine can't be told a custom vocabulary, so unique
@@ -99,6 +126,22 @@ Each glossary entry has:
 Matching is Unicode-aware and supports single words *and* short phrases.
 The glossary lives in `cfg.contextWords` in `localStorage` and is included
 in the exported config JSON so a whole team can share one vocabulary.
+
+### Auto-replacements
+
+Exact fixes for mishearings that keep coming back, one rule per line on the
+**🔤 Context words** tab: `чекаут, чек аут → Checkout`. They run before the
+fuzzy glossary match and never fire on a merely similar word. A Ukrainian
+case ending is carried over (`тегдепти` → `техдебти`), a sentence-initial
+capital is kept. Stored in `cfg.autoReplacements` (exported with the config).
+
+### Corrections log
+
+Every change made by a rule or a glossary match is listed on the same tab
+(`фолістім → Follistim ×3`, counted once per recording). For a glossary match
+that keeps repeating: **+ Alias** adds the recognized form to the term's
+"sounds like" list, **+ Rule** turns it into an exact auto-replacement.
+Kept in `localStorage` (`bra_ctx_log`, last 60), not exported.
 
 ## Report formats
 
@@ -141,6 +184,43 @@ Scenario-driven shape, useful for BDD-style projects:
 
 The choice is persisted in `localStorage` (`bra_format` for Report,
 `bra_session_format` for Session) so reload doesn't reset it.
+
+## Screenshots & screen recordings
+
+The **📎** zone on **📝 Single Report** (also in Composite mode) takes
+screenshots and screen recordings: drop files anywhere on the tab, click to
+choose, or paste a screenshot (⌘V / Ctrl+V).
+
+- **Formats** — PNG / JPG / GIF / WebP; MP4 (Windows Game Bar Win+Alt+R,
+  Snipping Tool, OBS remux), MOV (macOS ⌘⇧5), WebM, MKV when its codec is
+  supported. The browser decodes the video itself — if it can't (e.g. HEVC
+  without hardware support), the file shows an error with a hint to re-save
+  it as MP4 (H.264).
+- **Text is optional.** Text + video, text + screenshot, or files only: the
+  AI reads exact UI labels, URLs, values and the red-highlighted area from
+  screenshots, and reconstructs the steps from the recording (no audio
+  needed). Anything it inferred rather than saw or read is marked
+  `(inferred — verify)`. In Composite mode without written issues the AI
+  splits the files into issues itself.
+- **How video reaches the AI** — Claude takes images, not video, so the app
+  picks key frames in the browser: every settled screen change plus periodic
+  ones, first and last frame, up to 30 per video (40 images per request),
+  each labelled with its timestamp.
+- **Placement** — the AI picks the section the files go after, following
+  your AI rules (default: after the actual result) and, in Composite, which
+  issue each file shows. Both are editable in the **📎 Attachments** block
+  of the result card.
+- **🚀 Push to Jira** creates the issue, uploads the original files, then
+  re-writes the description with each file embedded right after its section
+  (inline media; a link in the same spot if inline embedding isn't possible).
+
+Files stay in memory: History keeps their names, but after a page reload a
+History item can't re-upload them.
+
+**Upload size:** the Vercel proxy accepts ~3 MB per file (bigger screenshots
+are re-compressed to fit; videos can't be). Open the app via
+`serve.command` / `serve.bat` — their built-in **local proxy** has no size
+limit and is used for uploads automatically.
 
 ## Composite bug (several issues in one ticket)
 
@@ -391,6 +471,18 @@ You'll get a URL like `https://bug-report-agent.vercel.app`. Then:
 Alternative: drag-and-drop the project folder to https://vercel.com/new.
 The `vercel.json` + `api/jira.js` are detected automatically.
 
+**Already deployed?** Re-deploy (`vercel --prod`) after updating — the proxy
+learned attachment uploads and media lookups for screenshots / recordings.
+
+### Local proxy (no Vercel needed)
+
+`serve.py` (started by `serve.command`, macOS) and `serve.ps1` (started by
+`serve.bat` / `start.bat`, Windows) host the same proxy at
+`http://localhost:8765/api/jira`. When the app is opened from them it is
+detected automatically: attachment uploads always go through it (no size
+limit), and all other Jira calls use it when **Proxy URL** is empty. It only
+answers requests from this computer.
+
 ### Jira field gotchas
 
 The proxy translates the AI-extracted custom fields into the shapes Jira
@@ -421,8 +513,9 @@ bug-report-agent/
 ├── install.ps1           # creates Desktop shortcut that launches serve.bat
 ├── install-mac.command   # macOS installer — creates "Bug Report Agent.app" on Desktop
 ├── serve.bat             # Windows local HTTP server (so Chrome remembers mic Allow)
-├── serve.ps1             # PowerShell HttpListener used by serve.bat (no deps)
-├── serve.command         # macOS local HTTP server (uses Python's http.server)
+├── serve.ps1             # PowerShell HttpListener used by serve.bat (no deps) + local Jira proxy
+├── serve.command         # macOS launcher — starts serve.py
+├── serve.py              # macOS local HTTP server (no-cache, IPv4+IPv6) + local Jira proxy
 ├── start.bat             # Windows one-click launcher: starts serve.ps1 minimized + opens browser
 ├── sw.js                 # Service Worker — action buttons in mic notifications
 ├── vercel.json           # Vercel runtime config for the proxy
@@ -441,6 +534,7 @@ bug-report-agent/
     ├── jira.js           # jiraRequest() + pushToJira() + testJiraConnection() + ADF builders (Normal + Gherkin)
     ├── history.js        # localStorage 'bra_history' — addToHistory, render, re-push, delete
     ├── composite.js      # 🧩 Composite bug — issue sections, per-section dictation, generateComposite()
+    ├── attachments.js    # 📎 screenshots / recordings — input, video key frames, placement, Jira upload + embed
     ├── session.js        # 🗂 Batch Report — bug cards, per-card mic, PiP, parallel generate
     ├── context.js        # 🔤 Context words glossary + correctTranscript() fuzzy auto-correction
     └── app.js            # DOMContentLoaded bootstrap + cfg migrations
@@ -472,6 +566,10 @@ bug-report-agent/
 | History row layout                        | `js/history.js` → `renderHistory()` / `renderHistoryBody()` |
 | Template analysis prompt                  | `js/template.js` → `analyzeTemplate()`            |
 | Context-word fuzzy matching / similarity  | `js/context.js` → `correctTranscript()` / `ctxSimilarity()` |
+| Auto-replacement rules / corrections log  | `js/context.js` → `parseAutoReplacements()` / `ctxLogCorrections()` |
+| GPT Transcribe request (model, hints)     | `js/ai.js` → `transcribeSpeech()`                 |
+| Video key-frame selection / AI budget     | `js/attachments.js` → `extractVideoFrames()` / constants on top |
+| Attachment upload / media embed in Jira   | `js/attachments.js` → `pushReportAttachments()`, `js/jira.js` → `jiraUploadAttachment()` |
 | Context-word glossary CRUD UI             | `js/context.js` → `renderContextWords()`          |
 | Colors, spacing, typography               | `css/styles.css`                                  |
 | Sidebar / page markup                     | `index.html`                                      |

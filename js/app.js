@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (typeof setReportFormat === 'function')  setReportFormat(reportFormat);
   if (typeof setSessionFormat === 'function') setSessionFormat(sessionFormat);
   if (typeof setCompositeMode === 'function') setCompositeMode(compositeMode, false);
+  if (typeof initAttachmentInput === 'function') initAttachmentInput();
   if (typeof renderContextWords === 'function') renderContextWords();
   maybeShowInstallBanner();
   registerVoiceServiceWorker();
@@ -105,6 +106,10 @@ function migrateCfg() {
   // legacy Whisper fields from older snapshots so cfg stays clean.
   if (!Array.isArray(cfg.contextWords)) {
     cfg.contextWords = [];
+    changed = true;
+  }
+  if (typeof cfg.autoReplacements !== 'string') {
+    cfg.autoReplacements = '';
     changed = true;
   }
   if (typeof cfg.contextThreshold !== 'number' || !(cfg.contextThreshold > 0)) {

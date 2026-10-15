@@ -10,7 +10,7 @@
        fallback stack instead of hanging on a white screen. -->
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap"
         rel="stylesheet" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="css/styles.css?v=composite" />
+  <link rel="stylesheet" href="css/styles.css?v=attachments" />
 </head>
 <body>
 <div class="app">
@@ -61,6 +61,11 @@
           <div class="v-live" id="vLive" style="display:none">
             <div class="v-meter"><div class="v-meter-fill" id="vMeterFill"></div></div>
           </div>
+          <div class="v-retry" id="vRetry" style="display:none">
+            <span id="vRetryLbl">⚠ Transcription failed — audio kept</span>
+            <button class="btn btn-ghost btn-sm" id="vRetryBtn" onclick="retryFailedTranscriptions()">↻ Retry</button>
+            <button class="rule-del" onclick="discardFailedTranscriptions()" title="Discard the recording">×</button>
+          </div>
         </div>
         <div class="lang-toggle">
           <button class="lang-btn active" id="lUk" onclick="setLang('uk-UA')">УК</button>
@@ -103,6 +108,17 @@
         <label class="lbl">Issues — type, or dictate with 🎙 on a section · "+ Next issue" in the floating window</label>
         <div id="compositeIssues"></div>
         <button class="btn btn-ghost" onclick="addCompositeIssue()" style="width:100%;justify-content:center;border-style:dashed">+ Add issue</button>
+      </div>
+
+      <!-- Screenshots / screen recordings (attachments.js). Drop anywhere on
+           this tab, click to choose, or paste a screenshot. -->
+      <div class="field attach-zone" id="attachZone">
+        <div class="attach-drop" onclick="document.getElementById('attachInput').click()">
+          <div class="attach-drop-title">📎 Screenshots &amp; screen recordings — drop here, click to choose, or paste (⌘V / Ctrl+V)</div>
+          <div class="attach-drop-hint">PNG · JPG · MP4 (Windows Game Bar / Snipping Tool) · MOV · WEBM · MKV. Text is optional — the AI reads steps from the video. Files are attached to the Jira ticket. Test data only: files are sent to the AI provider.</div>
+        </div>
+        <input type="file" id="attachInput" multiple accept="image/*,video/*,.mp4,.m4v,.mov,.webm,.mkv,.avi,.wmv" style="display:none" onchange="addAttachmentFiles(this.files);this.value=''"/>
+        <div id="attachList" class="attach-list"></div>
       </div>
 
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
@@ -209,11 +225,11 @@
         <div class="card-body">
           <div class="lang-toggle" style="background:var(--surface2);display:inline-flex">
             <button class="lang-btn" id="vcOff"  onclick="setVoiceCleanup('off')">Web Speech only</button>
-            <button class="lang-btn" id="vcGpt4oTranscribe" onclick="setVoiceCleanup('gpt4o-transcribe')">🤖 GPT-4o Transcribe</button>
+            <button class="lang-btn" id="vcGpt4oTranscribe" onclick="setVoiceCleanup('gpt4o-transcribe')">🤖 GPT Transcribe</button>
           </div>
           <div style="margin-top:10px;font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6">
             <strong style="color:var(--muted)">Web Speech only</strong> — instant live transcript from the browser recognizer (Context-words glossary still auto-corrects terms as you speak).<br>
-            <strong style="color:var(--muted)">🤖 GPT-4o Transcribe</strong> — records clean audio while you dictate (Siri-style equalizer instead of a live draft); the accurate, multilingual transcript appears after Pause / Stop. Handles the Ukrainian + English-terms mix in either direction. Needs OpenRouter selected with an OpenRouter API key; if a call fails, nothing is lost — re-record or type.
+            <strong style="color:var(--muted)">🤖 GPT Transcribe</strong> — records clean audio while you dictate (Siri-style equalizer instead of a live draft); the accurate transcript appears after Pause / Stop. Ukrainian dictation is sent as Ukrainian + English, so English UI terms stay in Latin; Context words and Auto-replacements go along as spelling hints. Silent recordings aren't sent. Needs OpenRouter selected with an OpenRouter API key; if a call fails after retries, the audio is kept — tap ↻ Retry.
           </div>
         </div>
       </div>
@@ -384,6 +400,35 @@
 
       <div class="card">
         <div class="card-head">
+          <span class="card-title">Auto-replacements</span>
+          <span id="ctxReplCount" style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">0 rules</span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6;margin-bottom:10px">
+            Exact fixes for mishearings that keep coming back — one rule per line: <code>wrong, other wrong → Right</code>.
+            Applied before the glossary match and never fire on a merely similar word. A Ukrainian case ending moves over: <code>тегдепти</code> → <code>техдебти</code>.
+            The right-hand spellings are also sent to GPT Transcribe as hints.
+          </div>
+          <textarea id="ctxReplacements" rows="5" placeholder="чекаут, чек аут → Checkout&#10;тегдепт, техтап → техдебт" style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.55" oninput="setAutoReplacements(this.value)"></textarea>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Corrections log</span>
+          <span id="ctxLogCount" style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">empty</span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6;margin-bottom:10px">
+            What the glossary and the rules changed in your dictation. A glossary match that keeps repeating → <strong style="color:var(--muted)">+ Alias</strong> (recognized form becomes a "sounds like") or <strong style="color:var(--muted)">+ Rule</strong> (always replaced, whatever the threshold).
+          </div>
+          <div id="ctxLogList"></div>
+          <div style="margin-top:10px"><button class="btn btn-ghost btn-sm" onclick="clearCorrectionLog()">🗑 Clear log</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
           <span class="card-title">Matching</span>
         </div>
         <div class="card-body">
@@ -455,19 +500,20 @@
 
 <!-- Scripts are loaded in dependency order. Each file adds functions to the
      global scope, so existing onclick="..." handlers keep working. -->
-<script src="js/state.js?v=composite"></script>
+<script src="js/state.js?v=transcribe-v2"></script>
 <script src="js/utils.js?v=label-strip"></script>
 <script src="js/ui.js"></script>
-<script src="js/config.js?v=no-live"></script>
-<script src="js/voice.js?v=composite"></script>
+<script src="js/config.js?v=transcribe-v2"></script>
+<script src="js/voice.js?v=transcribe-v2"></script>
 <script src="js/template.js?v=composite"></script>
 <script src="js/editable.js?v=composite"></script>
-<script src="js/ai.js?v=composite"></script>
-<script src="js/jira.js?v=composite"></script>
-<script src="js/history.js?v=composite"></script>
-<script src="js/composite.js?v=composite"></script>
-<script src="js/session.js?v=audio-session"></script>
-<script src="js/context.js"></script>
-<script src="js/app.js?v=composite"></script>
+<script src="js/ai.js?v=attachments"></script>
+<script src="js/jira.js?v=attachments"></script>
+<script src="js/history.js?v=attachments"></script>
+<script src="js/composite.js?v=attachments"></script>
+<script src="js/attachments.js?v=attachments"></script>
+<script src="js/session.js?v=transcribe-v2"></script>
+<script src="js/context.js?v=transcribe-v2"></script>
+<script src="js/app.js?v=attachments"></script>
 </body>
 </html>

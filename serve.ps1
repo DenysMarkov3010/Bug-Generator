@@ -91,6 +91,113 @@ Start-Process $url -ErrorAction SilentlyContinue
 # Resolve the root once for path-traversal checks.
 $rootFull = [System.IO.Path]::GetFullPath($root)
 
+# ---- local Jira proxy (/api/jira) ------------------------------------------
+# Same contract as api/jira.js (Vercel) and serve.py (macOS). Jira Cloud
+# blocks browser calls (CORS) and the Vercel proxy caps request bodies at
+# ~4.5 MB - too small for screen recordings. The app detects this proxy via
+# GET /api/jira/ping and uploads attachments through it with no size limit.
+# HttpListener is bound to localhost only, so only this computer can use it.
+Add-Type -AssemblyName System.Net.Http
+$allowedPath = '^/rest/api/3/(issue|myself|project|priority|field|search|attachment)'
+$uploadPath  = '^/rest/api/3/issue/[A-Za-z0-9_-]+/attachments$'
+
+function New-JiraClient([string]$email, [string]$token, [bool]$follow) {
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $follow
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromMinutes(5)
+    $auth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("${email}:${token}"))
+    $client.DefaultRequestHeaders.Add('Authorization', "Basic $auth")
+    $client.DefaultRequestHeaders.Add('Accept', 'application/json')
+    return $client
+}
+
+function Send-Json($res, [int]$status, [string]$json) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $res.StatusCode = $status
+    $res.ContentType = 'application/json; charset=utf-8'
+    $res.ContentLength64 = $bytes.Length
+    $res.OutputStream.Write($bytes, 0, $bytes.Length)
+}
+
+function Send-Upstream($res, $resp) {
+    $text = $resp.Content.ReadAsStringAsync().Result
+    if ([string]::IsNullOrWhiteSpace($text)) { $text = '{}' }
+    $t = $text.TrimStart()
+    if (-not ($t.StartsWith('{') -or $t.StartsWith('['))) {
+        $text = (@{ raw = $text.Substring(0, [Math]::Min(2000, $text.Length)) } | ConvertTo-Json -Compress)
+    }
+    Send-Json $res ([int]$resp.StatusCode) $text
+}
+
+function Test-JiraBase([string]$base) {
+    return ($base -match '^https?://')
+}
+
+function Invoke-LocalProxy($req, $res) {
+    $route = $req.Url.AbsolutePath
+    if ($req.HttpMethod -eq 'GET' -and $route -eq '/api/jira/ping') {
+        Send-Json $res 200 '{"ok":true,"proxy":"local"}'; return
+    }
+    if ($req.HttpMethod -ne 'POST') { Send-Json $res 405 '{"error":"POST only"}'; return }
+
+    if ($route -eq '/api/jira/upload') {
+        $base  = [string]$req.Headers['X-Jira-Url']
+        $email = [string]$req.Headers['X-Jira-Email']
+        $token = [string]$req.Headers['X-Jira-Token']
+        $path  = [string]$req.Headers['X-Jira-Path']
+        if (-not (Test-JiraBase $base) -or -not $email -or -not $token) { Send-Json $res 400 '{"error":"Missing jiraUrl / jiraEmail / jiraToken"}'; return }
+        if ($path -notmatch $uploadPath) { Send-Json $res 400 '{"error":"Upload path not allowed"}'; return }
+        $name = [System.Uri]::UnescapeDataString([string]$req.Headers['X-File-Name'])
+        if (-not $name) { $name = 'attachment' }
+        $ctype = if ($req.ContentType) { $req.ContentType } else { 'application/octet-stream' }
+        # Multipart body built by hand: MultipartFormDataContent would
+        # RFC2047-encode a non-ASCII filename ("=?utf-8?B?...?="), which Jira
+        # shows verbatim. Browsers (and serve.py) send plain UTF-8 instead.
+        $boundary = [Guid]::NewGuid().ToString('N')
+        $utf8 = [System.Text.Encoding]::UTF8
+        $head = $utf8.GetBytes("--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"" + ($name -replace '"', "'") + "`"`r`nContent-Type: $ctype`r`n`r`n")
+        $tail = $utf8.GetBytes("`r`n--$boundary--`r`n")
+        $ms = New-Object System.IO.MemoryStream
+        $ms.Write($head, 0, $head.Length)
+        $req.InputStream.CopyTo($ms)
+        $ms.Write($tail, 0, $tail.Length)
+        $form = New-Object System.Net.Http.ByteArrayContent(,$ms.ToArray())
+        $form.Headers.TryAddWithoutValidation('Content-Type', "multipart/form-data; boundary=$boundary") | Out-Null
+        $client = New-JiraClient $email $token $true
+        $client.DefaultRequestHeaders.Add('X-Atlassian-Token', 'no-check')
+        $resp = $client.PostAsync($base.TrimEnd('/') + $path, $form).Result
+        Send-Upstream $res $resp; return
+    }
+
+    if ($route -ne '/api/jira') { Send-Json $res 404 '{"error":"Not found"}'; return }
+    $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
+    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+    $base = [string]$payload.jiraUrl
+    if (-not (Test-JiraBase $base) -or -not $payload.jiraEmail -or -not $payload.jiraToken) { Send-Json $res 400 '{"error":"Missing jiraUrl / jiraEmail / jiraToken"}'; return }
+    $path = [string]$payload.path
+    if ($path -notmatch $allowedPath) { Send-Json $res 400 ('{"error":"Path not in allow-list: ' + ($path -replace '"', '') + '"}'); return }
+    $url = $base.TrimEnd('/') + $path
+
+    if ($payload.resolveMedia) {
+        $client = New-JiraClient $payload.jiraEmail $payload.jiraToken $false
+        $resp = $client.GetAsync($url).Result
+        $loc = if ($resp.Headers.Location) { $resp.Headers.Location.ToString() } else { '' }
+        if ($loc -match '/file/([0-9a-fA-F-]{36})/') { Send-Json $res 200 ('{"mediaId":"' + $Matches[1] + '"}'); return }
+        Send-Json $res 502 ('{"error":"No media id in Jira response (HTTP ' + [int]$resp.StatusCode + ')"}'); return
+    }
+
+    $method = if ($payload.method) { [string]$payload.method } else { 'GET' }
+    $msg = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::new($method), $url)
+    if ($null -ne $payload.body) {
+        $json = $payload.body | ConvertTo-Json -Depth 100 -Compress
+        $msg.Content = New-Object System.Net.Http.StringContent($json, [System.Text.Encoding]::UTF8, 'application/json')
+    }
+    $client = New-JiraClient $payload.jiraEmail $payload.jiraToken $true
+    $resp = $client.SendAsync($msg).Result
+    Send-Upstream $res $resp
+}
+
 while ($listener.IsListening) {
     $ctx = $null
     try { $ctx = $listener.GetContext() } catch { break }
@@ -100,6 +207,15 @@ while ($listener.IsListening) {
     $res = $ctx.Response
 
     try {
+        if ($req.Url.AbsolutePath.StartsWith('/api/jira')) {
+            try { Invoke-LocalProxy $req $res }
+            catch {
+                $err = ($_.Exception.Message -replace '[\\"]', "'")
+                try { Send-Json $res 502 ('{"error":"Local proxy failed: ' + $err + '"}') } catch {}
+            }
+            continue
+        }
+
         $rel = [System.Uri]::UnescapeDataString($req.Url.AbsolutePath)
         if ($rel -eq '/' -or [string]::IsNullOrEmpty($rel)) { $rel = '/index.html' }
 

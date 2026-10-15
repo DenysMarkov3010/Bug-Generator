@@ -17,11 +17,17 @@ Actual result:
 ${r.actualResult || ''}
 
 Expected result:
-${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}${buildLinkedWorkItemsText(r)}`;
+${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}${buildAttachmentsText(r)}${buildLinkedWorkItemsText(r)}`;
   } else {
     txt = buildNormalPlainText(r);
   }
   navigator.clipboard.writeText(txt).then(() => toast('✓ Copied to clipboard'));
+}
+
+// Plain-text "Attachments" footer for Copy — file names only.
+function buildAttachmentsText(r) {
+  const list = Array.isArray(r && r.attachments) ? r.attachments : [];
+  return list.length ? `\n\nAttachments:\n${list.map(a => `- ${a.name}`).join('\n')}` : '';
 }
 
 // Plain-text "Linked work items" footer for Copy (both formats + History).
@@ -44,7 +50,7 @@ function buildNormalPlainText(r) {
   if (r.environment && String(r.environment).trim()) {
     parts.push(`Environment: ${r.environment}`);
   }
-  return parts.filter(p => p !== '').join('\n\n') + buildLinkedWorkItemsText(r);
+  return parts.filter(p => p !== '').join('\n\n') + buildAttachmentsText(r) + buildLinkedWorkItemsText(r);
 }
 
 // Template-driven sections of one Normal report (or one composite issue) as
@@ -91,7 +97,7 @@ function buildCompositePlainText(r, isGherkin) {
   if (r.environment && String(r.environment).trim()) {
     parts.push(`Environment: ${r.environment}`);
   }
-  return parts.join('\n\n') + buildLinkedWorkItemsText(r);
+  return parts.join('\n\n') + buildAttachmentsText(r) + buildLinkedWorkItemsText(r);
 }
 
 // "Issue #2. Title" — the Expand title in Jira and the heading in Copy.
@@ -100,32 +106,82 @@ function compositeIssueHeading(issue, i) {
   return `Issue #${i + 1}.${title ? ' ' + title : ''}`;
 }
 
+// ── local proxy detection ─────────────────────────────────────────────────
+// serve.py (macOS) and serve.ps1 (Windows) host the same Jira proxy as the
+// Vercel function under /api/jira, without Vercel's ~4.5 MB body cap. When
+// the app is opened from that local server we use it for attachment uploads
+// and media lookups, and for everything when no Proxy URL is configured.
+let localProxyState = null;   // null = not probed yet · true · false
+
+async function localJiraProxyUrl() {
+  if (localProxyState === false) return '';
+  if (localProxyState === true) return location.origin + '/api/jira';
+  const isLocal = location.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  if (!isLocal) { localProxyState = false; return ''; }
+  try {
+    const r = await fetch('/api/jira/ping', { cache: 'no-store' });
+    const d = await r.json();
+    localProxyState = !!(r.ok && d && d.ok);
+  } catch {
+    localProxyState = false;   // older serve.* without the proxy, or serve.bat via another server
+  }
+  return localProxyState ? location.origin + '/api/jira' : '';
+}
+
+function jiraBaseUrl() {
+  return (cfg.jiraUrl || '').trim().replace(/\/+$/, '');
+}
+
+// Build a human-readable error from Jira's various response shapes.
+// - data.errors is an object {fieldId: "message", ...} — render per line
+// - data.errorMessages is a string[] of general errors
+// - data.error / data.message — flat string
+function jiraErrorMessage(data, status) {
+  const parts = [];
+  if (data && data.errors && typeof data.errors === 'object' && !Array.isArray(data.errors)) {
+    Object.entries(data.errors).forEach(([k, v]) => parts.push(`${k}: ${v}`));
+  }
+  if (data && Array.isArray(data.errorMessages) && data.errorMessages.length) {
+    parts.push(...data.errorMessages);
+  }
+  if (data && typeof data.error === 'string') parts.push(data.error);
+  if (data && typeof data.message === 'string') parts.push(data.message);
+  return parts.length ? parts.join('\n') : `HTTP ${status}`;
+}
+
 // ── unified Jira request helper ───────────────────────────────────────────
-// If cfg.proxyUrl is set → POSTs to the proxy with the request envelope.
-// If empty → tries to call Jira directly (will fail in Cloud due to CORS,
-// but useful for self-hosted Jira with relaxed CORS).
-async function jiraRequest(path, method = 'GET', body = null) {
-  const url = (cfg.jiraUrl || '').trim().replace(/\/+$/, '');
+// Proxy order: Setup → Proxy URL, else the local proxy (see above). With
+// neither → tries to call Jira directly (fails in Cloud due to CORS, but
+// works for self-hosted Jira with relaxed CORS).
+// opts.resolveMedia — ask the proxy for the media file id behind an
+//   /attachment/content/{id} URL instead of the response body.
+// opts.preferLocal  — use the local proxy even when a Proxy URL is set
+//   (attachment features need the updated proxy; a Vercel deployment may
+//   still run the old version).
+async function jiraRequest(path, method = 'GET', body = null, opts = {}) {
+  const url = jiraBaseUrl();
   if (!url || !cfg.jiraEmail || !cfg.jiraToken) {
     throw new Error('Fill in Jira connection in Setup first');
   }
+  const local = await localJiraProxyUrl();
+  const proxy = (opts.preferLocal && local) || (cfg.proxyUrl || '').trim() || local;
 
   // Atlassian Cloud blocks all browser → *.atlassian.net traffic via CORS.
   // Without a proxy the request would fail with a confusing CORS preflight
   // error — surface a friendly message instead.
   const isCloud = /\.atlassian\.net$/i.test(new URL(url).hostname || '');
-  if (isCloud && !cfg.proxyUrl) {
+  if (isCloud && !proxy) {
     throw new Error(
       'Jira Cloud blocks direct browser requests (CORS). ' +
-      'Set "Proxy URL" in Setup to your Vercel proxy ' +
-      '(https://<your-app>.vercel.app/api/jira). See README → "Deploy to Vercel".'
+      'Open the app via serve.command / serve.bat (built-in local proxy), or set "Proxy URL" ' +
+      'in Setup to your Vercel proxy (https://<your-app>.vercel.app/api/jira). See README → "Deploy to Vercel".'
     );
   }
 
   let res, data;
 
-  if (cfg.proxyUrl) {
-    res = await fetch(cfg.proxyUrl.trim(), {
+  if (proxy) {
+    res = await fetch(proxy, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body:    JSON.stringify({
@@ -135,6 +191,7 @@ async function jiraRequest(path, method = 'GET', body = null) {
         path,
         method,
         body,
+        ...(opts.resolveMedia ? { resolveMedia: true } : {}),
       }),
     });
   } else {
@@ -153,39 +210,112 @@ async function jiraRequest(path, method = 'GET', body = null) {
 
   try { data = await res.json(); } catch { data = {}; }
 
-  if (!res.ok) {
-    // Build a human-readable error from Jira's various response shapes.
-    // - data.errors is an object {fieldId: "message", ...} — render per line
-    // - data.errorMessages is a string[] of general errors
-    // - data.error / data.message — flat string
-    const parts = [];
-    if (data.errors && typeof data.errors === 'object' && !Array.isArray(data.errors)) {
-      Object.entries(data.errors).forEach(([k, v]) => parts.push(`${k}: ${v}`));
-    }
-    if (Array.isArray(data.errorMessages) && data.errorMessages.length) {
-      parts.push(...data.errorMessages);
-    }
-    if (typeof data.error === 'string') parts.push(data.error);
-    if (typeof data.message === 'string') parts.push(data.message);
-    const msg = parts.length ? parts.join('\n') : `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
+  if (!res.ok) throw new Error(jiraErrorMessage(data, res.status));
   return data;
+}
+
+// ── attachment upload ─────────────────────────────────────────────────────
+// Local proxy → raw bytes, any size. Vercel proxy → base64 inside the JSON
+// envelope, so the file must fit its ~4.5 MB body cap (images are
+// re-compressed to fit; videos can't be). Self-hosted Jira without a proxy
+// → direct multipart. Resolves to Jira's attachment object ({ id, filename… }).
+const VERCEL_UPLOAD_MAX = 3 * 1024 * 1024;   // raw bytes; base64 + JSON stays < 4.5 MB
+
+async function jiraUploadAttachment(issueKey, file, name) {
+  const url = jiraBaseUrl();
+  const path = `/rest/api/3/issue/${issueKey}/attachments`;
+  const filename = name || file.name || 'attachment';
+  const local = await localJiraProxyUrl();
+  let res;
+
+  if (local) {
+    res = await fetch(local + '/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Jira-Url': url, 'X-Jira-Email': cfg.jiraEmail, 'X-Jira-Token': cfg.jiraToken,
+        'X-Jira-Path': path, 'X-File-Name': encodeURIComponent(filename),
+      },
+      body: file,
+    });
+  } else if ((cfg.proxyUrl || '').trim()) {
+    let blob = file;
+    if (blob.size > VERCEL_UPLOAD_MAX && /^image\//.test(blob.type) && typeof shrinkImageForUpload === 'function') {
+      blob = await shrinkImageForUpload(blob, VERCEL_UPLOAD_MAX);
+    }
+    if (blob.size > VERCEL_UPLOAD_MAX) {
+      throw new Error(`${filename} is ${(blob.size / 1048576).toFixed(1)} MB — the Vercel proxy only takes ~3 MB. ` +
+        'Open the app via serve.command / serve.bat (local proxy, no size limit) or attach the file in Jira manually.');
+    }
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < buf.length; i += 0x8000) binary += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    res = await fetch(cfg.proxyUrl.trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        jiraUrl: url, jiraEmail: cfg.jiraEmail, jiraToken: cfg.jiraToken, path, method: 'POST',
+        upload: { filename: blob === file ? filename : filename.replace(/\.\w+$/, '') + '.jpg', contentType: blob.type || 'application/octet-stream', data: btoa(binary) },
+      }),
+    });
+  } else {
+    const form = new FormData();
+    form.append('file', file, filename);
+    res = await fetch(url + path, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + btoa(unescape(encodeURIComponent(`${cfg.jiraEmail}:${cfg.jiraToken}`))),
+        'X-Atlassian-Token': 'no-check',
+        'Accept': 'application/json',
+      },
+      body: form,
+    });
+  }
+
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
+  if (!res.ok) {
+    const msg = jiraErrorMessage(data, res.status);
+    // An old Vercel deployment doesn't know uploads yet.
+    throw new Error(/allow-list/.test(msg) ? msg + ' — redeploy api/jira.js to Vercel, or open the app via serve.command / serve.bat' : msg);
+  }
+  const att = Array.isArray(data) ? data[0] : data;
+  if (!att || !att.id) throw new Error('Jira returned no attachment id');
+  return att;
+}
+
+// Media file id (uuid) of an uploaded attachment — what an ADF "media" node
+// needs to show the file inline. Jira's attachment API doesn't return it;
+// the proxy reads it from the download redirect. null when unavailable.
+async function jiraResolveMediaId(attachmentId) {
+  try {
+    const d = await jiraRequest(`/rest/api/3/attachment/content/${attachmentId}`, 'GET', null,
+      { resolveMedia: true, preferLocal: true });
+    return (d && d.mediaId) || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── ADF (Atlassian Document Format) builder for the description ───────────
 // Normal reports are template-driven: cfg.reportTemplate.sections controls
 // section order, labels, list/text type and visual hints extracted from the
 // reference Template. Gherkin keeps its dedicated builder.
-function buildAdfDescription(r) {
+//
+// `media` (optional) embeds uploaded attachments: { main: slots } for a
+// single report, { issues: [slots, …] } for a composite one, where
+// slots = { <section id>: [ADF blocks], _end: [ADF blocks] } — the blocks are
+// inserted right after that section (see attachments.js buildMediaPlan).
+function buildAdfDescription(r, media) {
   // Format-aware: gherkin reports get a different block structure than
   // normal reports. The split happens here so the rest of pushToJira()
   // stays format-agnostic. `reportFormat` is set by ai.js / session.js /
   // history.js before they call pushToJira().
-  if (Array.isArray(r.issues)) return buildAdfDescriptionComposite(r);
-  if (reportFormat === 'gherkin') return buildAdfDescriptionGherkin(r);
+  if (Array.isArray(r.issues)) return buildAdfDescriptionComposite(r, media);
+  const slots = (media && media.main) || null;
+  if (reportFormat === 'gherkin') return buildAdfDescriptionGherkin(r, slots);
 
-  const blocks = buildNormalAdfBlocks(r);
+  const blocks = buildNormalAdfBlocks(r, slots);
   // Jira rejects an empty content array — always include at least one block.
   if (!blocks.length) blocks.push({ type: 'paragraph', content: [{ type: 'text', text: '(no details)' }] });
   return { type: 'doc', version: 1, content: blocks };
@@ -196,10 +326,11 @@ function buildAdfDescription(r) {
 // that issue's full body — built by the same Normal / Gherkin block builders
 // a standalone report uses, so styling (panels, colored AR/ER headings,
 // ordered steps) is identical inside each Expand.
-function buildAdfDescriptionComposite(r) {
+function buildAdfDescriptionComposite(r, media) {
   const isGherkin = reportFormat === 'gherkin';
   const blocks = (r.issues || []).map((issue, i) => {
-    const inner = isGherkin ? buildGherkinAdfBlocks(issue) : buildNormalAdfBlocks(issue);
+    const slots = (media && media.issues && media.issues[i]) || null;
+    const inner = isGherkin ? buildGherkinAdfBlocks(issue, slots) : buildNormalAdfBlocks(issue, slots);
     return {
       type: 'expand',
       attrs: { title: compositeIssueHeading(issue, i) },
@@ -211,8 +342,9 @@ function buildAdfDescriptionComposite(r) {
 }
 
 // Template-driven Normal body as a flat ADF block array (no doc wrapper) —
-// shared by standalone reports and each composite issue.
-function buildNormalAdfBlocks(r) {
+// shared by standalone reports and each composite issue. `slots` (optional)
+// = extra blocks to place right after a section id (or at the end).
+function buildNormalAdfBlocks(r, slots) {
   const blocks = [];
   const RULE  = { type: 'rule' };
   const tpl = typeof getReportTemplate === 'function' ? getReportTemplate() : { sections: [] };
@@ -246,13 +378,18 @@ function buildNormalAdfBlocks(r) {
     return { type: 'paragraph', content };
   });
 
+  const placed = new Set();
+  const slotAfter = id => {
+    if (slots && slots[id] && !placed.has(id)) { blocks.push(...slots[id]); placed.add(id); }
+  };
+
   tpl.sections.forEach(section => {
     const style = section.style || {};
     const value = sections[section.id];
     const hasValue = section.type === 'list'
       ? Array.isArray(value) && value.some(v => String(v).trim())
       : String(value || '').trim();
-    if (!hasValue && !section.required) return;
+    if (!hasValue && !section.required) { slotAfter(section.id); return; }
     if (blocks.length && style.dividerBefore) blocks.push(RULE);
 
     const target = [];
@@ -280,7 +417,11 @@ function buildNormalAdfBlocks(r) {
     } else {
       blocks.push(...target);
     }
+    slotAfter(section.id);
   });
+  // Slots for sections the template no longer has, plus explicit "_end".
+  if (slots) Object.keys(slots).forEach(id => { if (id !== '_end') slotAfter(id); });
+  slotAfter('_end');
   return blocks;
 }
 
@@ -294,16 +435,21 @@ function buildNormalAdfBlocks(r) {
 //
 // We keep the same red/green color convention as the normal report so the
 // Jira ticket maintains a consistent visual identity across formats.
-function buildAdfDescriptionGherkin(r) {
-  const blocks = buildGherkinAdfBlocks(r);
+function buildAdfDescriptionGherkin(r, slots) {
+  const blocks = buildGherkinAdfBlocks(r, slots);
   if (!blocks.length) blocks.push({ type: 'paragraph', content: [{ type: 'text', text: '(no details)' }] });
   return { type: 'doc', version: 1, content: blocks };
 }
 
 // Gherkin body as a flat ADF block array — shared by standalone reports and
-// each composite issue.
-function buildGherkinAdfBlocks(r) {
+// each composite issue. `slots` keys: description · actualResult ·
+// expectedResult · _end.
+function buildGherkinAdfBlocks(r, slots) {
   const blocks = [];
+  const placed = new Set();
+  const slotAfter = id => {
+    if (slots && slots[id] && !placed.has(id)) { blocks.push(...slots[id]); placed.add(id); }
+  };
   const text   = s => ({ type: 'text', text: String(s) });
   const RULE   = { type: 'rule' };
   const coloredHeading = (line, color) => ({
@@ -344,6 +490,7 @@ function buildGherkinAdfBlocks(r) {
       }
     });
   }
+  slotAfter('description');
 
   // ── Actual / Expected result ──────────────────────────────────────────
   const arLines = String(r.actualResult || '').replace(/\\n/g, '\n').split('\n')
@@ -362,6 +509,7 @@ function buildGherkinAdfBlocks(r) {
       })),
     });
   }
+  slotAfter('actualResult');
   if (erLines.length) {
     if (arLines.length || blocks.length) blocks.push(RULE);
     blocks.push(coloredHeading('ER: Expected result', '#36b37e'));
@@ -373,12 +521,14 @@ function buildGherkinAdfBlocks(r) {
       })),
     });
   }
+  slotAfter('expectedResult');
 
   if (r.additionalInfo && String(r.additionalInfo).trim()) {
     blocks.push(RULE);
     blocks.push({ type: 'heading', attrs: { level: 3 }, content: [text('Additional info')] });
     blocks.push({ type: 'paragraph', content: parseBackticks(r.additionalInfo) });
   }
+  if (slots) Object.keys(slots).forEach(slotAfter);
   return blocks;
 }
 
@@ -583,10 +733,20 @@ async function pushToJira() {
       toast(`⚠ ${linkRes.fails.length} of ${linkRes.total} issue link${linkRes.total === 1 ? '' : 's'} failed:\n` + linkRes.fails.join('\n'));
     }
 
+    // Screenshots / recordings: upload, then re-write the description with
+    // them embedded where the report says (attachments.js). Failures never
+    // undo the created issue — they are reported instead.
+    let attNote = '';
+    if (typeof pushReportAttachments === 'function' && Array.isArray(r.attachments) && r.attachments.length) {
+      const a = await pushReportAttachments(d.key, r);
+      attNote = a.note;
+      if (a.problems.length) showErr(`${d.key} created, but attachments had problems:\n\n` + a.problems.join('\n'));
+    }
+
     // Open the newly-created issue in a new tab so the user can verify it
     // immediately. `d.self` is the API URL; we derive the browse URL from
     // the base Jira URL + issue key, which is the human-facing page.
-    toast(`✓ Created ${d.key}${linkRes.ok ? ` · 🔗 ${linkRes.ok} link${linkRes.ok === 1 ? '' : 's'}` : ''} — opening…`);
+    toast(`✓ Created ${d.key}${linkRes.ok ? ` · 🔗 ${linkRes.ok} link${linkRes.ok === 1 ? '' : 's'}` : ''}${attNote} — opening…`);
     const base   = (cfg.jiraUrl || '').trim().replace(/\/+$/, '');
     const issueUrl = `${base}/browse/${d.key}`;
     const win = window.open(issueUrl, '_blank', 'noopener,noreferrer');

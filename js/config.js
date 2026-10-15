@@ -98,10 +98,12 @@ function removeLinkedWorkItem(i) {
   renderLinkedWorkItems();
 }
 
-// ── Dictation: Web Speech only / GPT-4o Transcribe ─────────────────────────
+// ── Dictation: Web Speech only / GPT Transcribe ────────────────────────────
 // Persisted immediately (like the Context-words threshold) — flipping the
 // engine shouldn't require remembering to hit 💾 Save at the bottom.
-// cfg.voiceAiCleanup stores: false = off · 'gpt4o-transcribe'.
+// cfg.voiceAiCleanup stores: false = off · 'gpt4o-transcribe' (the value
+// predates the switch to the openai/gpt-transcribe model; kept as-is so
+// saved / exported configs keep working).
 // Retired modes (true / 'stop' / 'live' / 'whisper-turbo') migrate to
 // 'gpt4o-transcribe' in migrateCfg / importCfg.
 function voiceCleanupMode() {
@@ -121,7 +123,7 @@ function setVoiceCleanup(mode) {
   localStorage.setItem('bra_cfg', JSON.stringify(cfg));
   renderVoiceCleanupToggle();
   toast(mode === 'gpt4o-transcribe'
-    ? '✓ GPT-4o Transcribe — final text is transcribed from audio after Pause / Stop'
+    ? '✓ GPT Transcribe — final text is transcribed from audio after Pause / Stop'
     : '✓ Web Speech only — transcript is kept exactly as recognized');
 }
 

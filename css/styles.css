@@ -242,3 +242,32 @@ a.lwi-open:hover{background:var(--accent-dim)}
 .ci-res-title{flex:1;color:var(--text)}
 .ci-res-body{padding:12px 14px}
 .ci-res.collapsed .ci-res-body{display:none}
+
+/* ── Dictation: failed-transcription retry + corrections log ──────────────── */
+.v-retry{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--amber)}
+.ctx-log-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12.5px}
+.ctx-log-row:last-child{border-bottom:none}
+.ctx-log-pair{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctx-log-from{color:var(--muted);font-family:'IBM Plex Mono',monospace}
+.ctx-log-meta{font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace;white-space:nowrap}
+
+/* ── Attachments (screenshots / screen recordings) ─────────────────────────
+   Input zone on Single Report + the 📎 block on result cards. */
+.attach-drop{border:1px dashed var(--border-md);border-radius:var(--r);padding:12px 14px;cursor:pointer;background:var(--surface);transition:border-color .15s,background .15s}
+.attach-drop:hover,.attach-zone.drag .attach-drop{border-color:var(--accent);background:var(--accent-dim)}
+.attach-drop-title{font-size:13px;color:var(--text)}
+.attach-drop-hint{margin-top:4px;font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.5}
+.attach-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.attach-list:empty{display:none}
+.att-chip{display:flex;align-items:center;gap:8px;background:var(--surface);border:0.5px solid var(--border-md);border-radius:var(--r-sm);padding:6px 6px 6px 6px;max-width:320px}
+.att-chip.att-bad{border-color:rgba(255,94,87,.4)}
+.att-thumb{width:52px;height:36px;border-radius:4px;overflow:hidden;background:var(--surface3);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.att-thumb img{width:100%;height:100%;object-fit:cover}
+.att-icon{font-size:18px}
+.att-info{min-width:0;flex:1}
+.att-name{font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.att-meta{font-size:10.5px;color:var(--dim);font-family:'IBM Plex Mono',monospace}
+.att-err{color:var(--red);white-space:normal}
+.att-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.att-row-name{flex:1;min-width:0;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.att-row select{font-size:12px;padding:5px 8px;font-family:'IBM Plex Mono',monospace;color:var(--muted);max-width:220px}

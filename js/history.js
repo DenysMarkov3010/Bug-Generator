@@ -75,7 +75,7 @@ function renderHistory() {
       : '';
     const resultId = 'history:' + item.id;
     return `
-    <div class="card" style="margin-bottom:.75rem" data-result-id="${resultId}">
+    <div class="card" style="margin-bottom:.75rem" data-result-id="${resultId}" data-format="${esc(item.format || 'normal')}">
       <div class="card-head" style="cursor:pointer" onclick="toggleHistoryItem(${i})">
         <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
           <span class="sev sev-edit sev-${esc(item.severity)}" onclick="event.stopPropagation();cycleSeverity(this)" title="Click to change severity">${esc(item.severity)}</span>
@@ -116,7 +116,8 @@ function renderHistoryBody(item) {
   // Linked work items are editable here too — the history resolver persists
   // edits back to localStorage, so a re-push picks up the curated links.
   const linked = typeof renderLinkedItemsBlock === 'function' ? renderLinkedItemsBlock(r, resultId) : '';
-  return body + linked;
+  const files = typeof renderAttachmentsBlock === 'function' ? renderAttachmentsBlock(r, resultId, item.format === 'gherkin') : '';
+  return body + files + linked;
 }
 
 function toggleHistoryItem(i) {
@@ -165,7 +166,7 @@ Actual result:
 ${r.actualResult || ''}
 
 Expected result:
-${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}${typeof buildLinkedWorkItemsText === 'function' ? buildLinkedWorkItemsText(r) : ''}`;
+${r.expectedResult || ''}${r.additionalInfo ? `\n\nAdditional info: ${r.additionalInfo}` : ''}${typeof buildAttachmentsText === 'function' ? buildAttachmentsText(r) : ''}${typeof buildLinkedWorkItemsText === 'function' ? buildLinkedWorkItemsText(r) : ''}`;
   } else {
     txt = typeof buildNormalPlainText === 'function' ? buildNormalPlainText(r) : `${r.summary || ''}`;
   }

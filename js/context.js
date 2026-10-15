@@ -106,12 +106,117 @@ function ctxBestMatch(norm, len, dict, threshold) {
   return best;
 }
 
+// ── auto-replacements (cfg.autoReplacements) ───────────────────────────────
+// Exact rules for KNOWN recurring mishearings, one per line:
+//   "чекаут, чек аут → Checkout"
+// Unlike the fuzzy glossary match these never fire on a merely similar word.
+// A Cyrillic wrong form may carry a short case ending (≤3 letters) that is
+// moved onto a Cyrillic target: "тегдепти" → "техдебти". Ported from the
+// Meet Listener app (terms.py). Arrow may be →, ->, => or =; "#" = comment.
+const CTX_CYR = "а-яіїєґА-ЯІЇЄҐ'’";
+const CTX_MAX_SUFFIX = 3;
+
+function parseAutoReplacements(text) {
+  const rules = [];
+  const ends = new RegExp('[' + CTX_CYR + ']$');
+  String(text || '').split('\n').forEach(line => {
+    line = line.trim();
+    if (!line || line.startsWith('#')) return;
+    const m = line.match(/^(.*?)\s*(?:→|->|=>|=)\s*(.+)$/);
+    if (!m) return;
+    const target = m[2].trim();
+    const seen = new Set();
+    m[1].split(/[,;]/).map(w => w.trim()).filter(Boolean).forEach(wrong => {
+      const key = wrong.toLowerCase();
+      if (wrong.length < 3 || key === target.toLowerCase() || seen.has(key)) return;
+      seen.add(key);
+      const body = wrong.split(/\s+/).map(w => w.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')).join('\\s+');
+      const suffix = ends.test(wrong) ? '([' + CTX_CYR + ']{0,' + CTX_MAX_SUFFIX + '})' : '()';
+      try {
+        rules.push({
+          wrong, target,
+          rx: new RegExp('(?<![\\p{L}\\p{N}_-])' + body + suffix + '(?![\\p{L}\\p{N}_])', 'giu'),
+          keepSuffix: ends.test(target),
+        });
+      } catch {}
+    });
+  });
+  return rules;
+}
+window.parseAutoReplacements = parseAutoReplacements;
+
+function applyAutoReplacements(text, rules) {
+  const hits = [];
+  let out = text;
+  for (const r of rules) {
+    out = out.replace(r.rx, (match, suffix) => {
+      hits.push({ from: match, to: r.target });
+      // Keep a sentence-initial capital: "Тегдепти" → "Техдебти".
+      const first = match.charAt(0);
+      const target = (first !== first.toLowerCase() && r.target.charAt(0) === r.target.charAt(0).toLowerCase())
+        ? r.target.charAt(0).toUpperCase() + r.target.slice(1)
+        : r.target;
+      return target + (r.keepSuffix ? suffix : '');
+    });
+  }
+  return { text: out, hits };
+}
+
+// ── corrections log ─────────────────────────────────────────────────────────
+// Every change made by an auto-replacement or a glossary match is remembered
+// ("фолістім → Follistim ×3") so recurring mishearings can be promoted on the
+// Context words page: a fuzzy hit becomes an alias or an exact rule. Live
+// dictation re-corrects the whole transcript on every speech frame, so a
+// pair counts once per recording (ctxStartCorrectionPass bumps the pass).
+const CTX_LOG_KEY = 'bra_ctx_log';
+const CTX_LOG_MAX = 60;
+let ctxPass = 0;
+
+function ctxStartCorrectionPass() { ctxPass++; }
+window.ctxStartCorrectionPass = ctxStartCorrectionPass;
+
+function loadCorrectionLog() {
+  try {
+    const list = JSON.parse(localStorage.getItem(CTX_LOG_KEY) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+function ctxLogCorrections(hits, kind) {
+  if (!hits.length) return;
+  const log = loadCorrectionLog();
+  let changed = false;
+  hits.forEach(h => {
+    const from = String(h.from).trim();
+    if (!from || from === h.to) return;
+    let e = log.find(x => x.from.toLowerCase() === from.toLowerCase() && x.to === h.to);
+    if (e && e.pass === ctxPass && e.session === ctxSessionId) return;   // same recording
+    if (!e) { e = { from, to: h.to, kind, count: 0 }; log.push(e); }
+    e.count++;
+    e.pass = ctxPass;
+    e.session = ctxSessionId;
+    e.last = Date.now();
+    changed = true;
+  });
+  if (!changed) return;
+  log.sort((a, b) => b.last - a.last);
+  try { localStorage.setItem(CTX_LOG_KEY, JSON.stringify(log.slice(0, CTX_LOG_MAX))); } catch {}
+}
+// Pass numbers restart on reload; the session id keeps an old entry's pass
+// from colliding with a fresh one.
+const ctxSessionId = Date.now();
+
 // ── the public correction pass ──────────────────────────────────────────────
-// Rewrites `raw` so words/phrases that fuzzily match the glossary are swapped
-// for the exact term spelling. Original whitespace + punctuation around the
-// matched span is preserved. Safe no-op when the glossary is empty.
-function correctTranscript(raw) {
-  if (!raw || typeof raw !== 'string') return raw;
+// First the exact auto-replacements, then the fuzzy glossary: words/phrases
+// that fuzzily match the glossary are swapped for the exact term spelling.
+// Original whitespace + punctuation around the matched span is preserved.
+// Safe no-op when both are empty.
+function correctTranscript(input) {
+  if (!input || typeof input !== 'string') return input;
+  const rules = parseAutoReplacements(typeof cfg !== 'undefined' ? cfg.autoReplacements : '');
+  const replaced = rules.length ? applyAutoReplacements(input, rules) : { text: input, hits: [] };
+  ctxLogCorrections(replaced.hits, 'rule');
+  const raw = replaced.text;
   const dict = ctxBuildDict();
   if (!dict.maxN) return raw;
   const threshold = (typeof cfg !== 'undefined' && cfg.contextThreshold > 0) ? cfg.contextThreshold : 0.85;
@@ -127,6 +232,7 @@ function correctTranscript(raw) {
   if (!n) return raw;
 
   const out = [];
+  const fuzzyHits = [];
   let i = 0;
   let lastPos = 0;
   while (i < n) {
@@ -144,6 +250,10 @@ function correctTranscript(raw) {
       const last  = words[i + matched.len - 1];
       out.push(raw.slice(lastPos, first.start));            // gap before the span
       out.push(ctxLeadingPunct(first.text) + matched.term + ctxTrailingPunct(last.text));
+      const spoken = words.slice(i, i + matched.len).map(w => w.text).join(' ');
+      if (ctxNormalize(spoken) !== ctxNormalize(matched.term)) {
+        fuzzyHits.push({ from: ctxNormalize(spoken), to: matched.term });
+      }
       lastPos = last.end;
       i += matched.len;
     } else {
@@ -151,6 +261,7 @@ function correctTranscript(raw) {
     }
   }
   out.push(raw.slice(lastPos));
+  ctxLogCorrections(fuzzyHits, 'glossary');
   return out.join('');
 }
 window.correctTranscript = correctTranscript;
@@ -192,6 +303,9 @@ function renderContextWords() {
       }).join('');
     }
   }
+
+  renderAutoReplacements();
+  renderCorrectionLog();
 
   const restoreBtn = document.getElementById('ctxRestoreBtn');
   if (restoreBtn) {
@@ -310,3 +424,85 @@ function mergeContextWords(incoming) {
   return added;
 }
 window.mergeContextWords = mergeContextWords;
+
+// ── auto-replacements editor ────────────────────────────────────────────────
+function renderAutoReplacements() {
+  const ta = document.getElementById('ctxReplacements');
+  if (ta && document.activeElement !== ta) ta.value = cfg.autoReplacements || '';
+  renderAutoReplacementsStatus();
+}
+
+function renderAutoReplacementsStatus() {
+  const el = document.getElementById('ctxReplCount');
+  if (!el) return;
+  const lines = String(cfg.autoReplacements || '').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  const bad = lines.filter(l => !/(→|->|=>|=)\s*\S/.test(l)).length;
+  const n = parseAutoReplacements(cfg.autoReplacements).length;
+  el.textContent = `${n} rule${n === 1 ? '' : 's'}` + (bad ? ` · ${bad} line${bad === 1 ? '' : 's'} without "→" ignored` : '');
+  el.style.color = bad ? 'var(--amber)' : 'var(--dim)';
+}
+
+function setAutoReplacements(v) {
+  cfg.autoReplacements = String(v || '');
+  _ctxSave();
+  renderAutoReplacementsStatus();
+}
+
+// ── corrections log view ────────────────────────────────────────────────────
+function renderCorrectionLog() {
+  const box = document.getElementById('ctxLogList');
+  if (!box) return;
+  const log = loadCorrectionLog();
+  const cnt = document.getElementById('ctxLogCount');
+  if (cnt) cnt.textContent = log.length ? `${log.length} recent` : 'empty';
+  if (!log.length) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;padding:4px 0">Nothing corrected yet. Dictate something that uses your context words — every fix shows up here.</div>`;
+    return;
+  }
+  box.innerHTML = log.map((e, i) => {
+    const actions = e.kind === 'glossary'
+      ? `<button class="btn btn-ghost btn-sm" onclick="promoteCorrection(${i}, 'alias')" title="Add “${esc(e.from)}” to the aliases of ${esc(e.to)}">+ Alias</button>
+         <button class="btn btn-ghost btn-sm" onclick="promoteCorrection(${i}, 'rule')" title="Always replace “${esc(e.from)}” with ${esc(e.to)}, regardless of the similarity threshold">+ Rule</button>`
+      : '';
+    return `<div class="ctx-log-row">
+      <span class="ctx-log-pair"><span class="ctx-log-from">${esc(e.from)}</span> → <strong>${esc(e.to)}</strong></span>
+      <span class="ctx-log-meta">${e.kind === 'rule' ? 'rule' : 'glossary match'} · ×${e.count || 1}</span>
+      ${actions}
+      <button class="ctx-del" onclick="removeCorrection(${i})" title="Remove from log">×</button>
+    </div>`;
+  }).join('');
+}
+
+function promoteCorrection(idx, how) {
+  const log = loadCorrectionLog();
+  const e = log[idx];
+  if (!e) return;
+  if (how === 'alias') {
+    const w = (cfg.contextWords || []).find(x => x && x.term === e.to);
+    if (!w) { toast('⚠ “' + e.to + '” is no longer in the glossary'); return; }
+    w.aliases = Array.isArray(w.aliases) ? w.aliases : [];
+    if (!w.aliases.some(a => a.toLowerCase() === e.from.toLowerCase())) w.aliases.push(e.from);
+    toast(`✓ “${e.from}” added as an alias of ${e.to}`);
+  } else {
+    const line = `${e.from} → ${e.to}`;
+    const cur = String(cfg.autoReplacements || '').replace(/\s+$/, '');
+    cfg.autoReplacements = cur ? cur + '\n' + line : line;
+    toast(`✓ Rule added: ${line}`);
+  }
+  log.splice(idx, 1);
+  try { localStorage.setItem(CTX_LOG_KEY, JSON.stringify(log)); } catch {}
+  _ctxSave();
+  renderContextWords();
+}
+
+function removeCorrection(idx) {
+  const log = loadCorrectionLog();
+  log.splice(idx, 1);
+  try { localStorage.setItem(CTX_LOG_KEY, JSON.stringify(log)); } catch {}
+  renderCorrectionLog();
+}
+
+function clearCorrectionLog() {
+  localStorage.removeItem(CTX_LOG_KEY);
+  renderCorrectionLog();
+}

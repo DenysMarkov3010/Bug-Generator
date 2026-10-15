@@ -24,7 +24,15 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { jiraUrl, jiraEmail, jiraToken, path, method = 'GET', body } = req.body || {};
+  // upload       = { filename, contentType, data (base64) } → multipart POST
+  //                to /issue/{key}/attachments. Vercel caps the request
+  //                body at ~4.5 MB, so the app only sends files that fit;
+  //                bigger ones go through the local proxy in serve.py /
+  //                serve.ps1.
+  // resolveMedia = true → GET an /attachment/content/{id} URL WITHOUT
+  //                following its redirect and return the media file id from
+  //                the Location header (needed to embed the file in ADF).
+  const { jiraUrl, jiraEmail, jiraToken, path, method = 'GET', body, upload, resolveMedia } = req.body || {};
 
   if (!jiraUrl || !jiraEmail || !jiraToken || !path) {
     res.status(400).json({ error: 'Missing jiraUrl / jiraEmail / jiraToken / path' });
@@ -32,7 +40,7 @@ export default async function handler(req, res) {
   }
 
   // Whitelist: only allow Jira REST API endpoints we actually use.
-  const allowed = /^\/rest\/api\/3\/(issue|myself|project|priority|field|search)/;
+  const allowed = /^\/rest\/api\/3\/(issue|myself|project|priority|field|search|attachment)/;
   if (!allowed.test(path)) {
     res.status(400).json({ error: `Path "${path}" not in allow-list` });
     return;
@@ -42,6 +50,38 @@ export default async function handler(req, res) {
   const auth     = Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64');
 
   try {
+    if (resolveMedia) {
+      const r = await fetch(`${cleanUrl}${path}`, {
+        headers: { 'Authorization': `Basic ${auth}` },
+        redirect: 'manual',
+      });
+      const m = /\/file\/([0-9a-fA-F-]{36})\//.exec(r.headers.get('location') || '');
+      if (m) res.status(200).json({ mediaId: m[1] });
+      else res.status(502).json({ error: `No media id in Jira response (HTTP ${r.status})` });
+      return;
+    }
+
+    if (upload) {
+      if (!/^\/rest\/api\/3\/issue\/[A-Za-z0-9_-]+\/attachments$/.test(path)) {
+        res.status(400).json({ error: `Upload path "${path}" not allowed` });
+        return;
+      }
+      const form = new FormData();
+      form.append('file', new Blob([Buffer.from(upload.data || '', 'base64')], {
+        type: upload.contentType || 'application/octet-stream',
+      }), upload.filename || 'attachment');
+      const r = await fetch(`${cleanUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Basic ${auth}`, 'Accept': 'application/json', 'X-Atlassian-Token': 'no-check' },
+        body: form,
+      });
+      const t = await r.text();
+      let d;
+      try { d = JSON.parse(t); } catch { d = { raw: t }; }
+      res.status(r.status).json(d);
+      return;
+    }
+
     const upstream = await fetch(`${cleanUrl}${path}`, {
       method,
       headers: {

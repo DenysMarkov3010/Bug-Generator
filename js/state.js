@@ -55,6 +55,11 @@ const DEFAULTS = {
   // contextThreshold = similarity 0..1 required to accept a correction.
   contextWords:     [],
   contextThreshold: 0.85,
+  // Exact fixes for known recurring mishearings, one rule per line:
+  //   "чекаут, чек аут → Checkout"  (see parseAutoReplacements in context.js)
+  // Applied before the fuzzy glossary match; targets also go to GPT
+  // Transcribe as keyword hints.
+  autoReplacements: '',
   // ── Dictation mode (Setup → Dictation) ───────────────────────────────────
   // false              → pure Web Speech API behaviour (instant live text).
   // 'gpt4o-transcribe' → record clean audio, no live draft; OpenRouter

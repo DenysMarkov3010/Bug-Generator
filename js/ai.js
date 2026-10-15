@@ -17,8 +17,10 @@
 // `opts.composite` switches to the Composite Bug schema: one umbrella
 // summary + an `issues` array, each issue a self-contained mini-report
 // (rendered as a Jira Expand "Issue #N. <title>" — see composite.js).
+// `opts.attachments` = list of attached screenshots / recordings (text from
+// prepareAttachmentsForAi) — adds the evidence rules and the placement keys.
 function buildSystemPrompt(opts) {
-  const { isGherkin = false, composite = false } = opts || {};
+  const { isGherkin = false, composite = false, attachments = '' } = opts || {};
   const rulesText = cfg.rules.map((r, i) => `${i + 1}. ${r.text}`).join('\n');
 
   // Environment override — same logic as the legacy single-bug prompt.
@@ -66,6 +68,24 @@ COMPOSITE BUG REPORT — the input contains SEVERAL separate issues, labelled "I
 - "issues[].title" = short title of that single issue (max ~100 chars), plain text, WITHOUT an "Issue #N" prefix — the app adds the numbering.
 - Every issue is self-contained: it gets its own ${isGherkin ? '"description" (with its own Scenario), "actualResult" and "expectedResult"' : '"sections"'}, even when several issues share the same preconditions.` : '';
 
+  // Screenshots / screen recordings sent along as images. Placement keys:
+  // "attachmentsAfter" (where the files are embedded in the Jira ticket)
+  // and, for composite reports, issues[].attachments (which issue a file
+  // shows). See applyAttachmentsToReport in attachments.js.
+  const slotIds = isGherkin ? '"description", "actualResult" or "expectedResult"' : 'one of the section ids above';
+  const attachmentRule = attachments ? `
+
+ATTACHMENTS — the user attached screenshots and/or screen recordings; their images follow the user's text, each labelled with its attachment number:
+${attachments}
+- They are EVIDENCE of the bug. Read exact UI labels, page titles, breadcrumbs, URLs in the address bar, field values and on-screen error messages from them and use that exact wording.
+- Rectangles, circles or arrows drawn in a bright colour (usually red) mark the bug area — what is shown there is the actual result.
+- A screen recording comes as frames in chronological order with timestamps. Reconstruct the user's steps from the sequence (navigation, clicks, typed values, opened dialogs, changing URLs) and take the moment where things go wrong as the actual result. Frames are sampled, so a quick click between two frames may be missing — infer it from what changed.
+- The written description, when present, has priority; attachments complete it. If there is no written description, build the whole report from the attachments.
+- Never present a guess as fact: when a step, precondition or expected result is your inference rather than something the user wrote or the attachments visibly show, append " (inferred — verify)" to it.
+- ${composite
+    ? `Every "issues" entry gets "attachments": [numbers of the attachments that show THIS issue] (each attachment belongs to at most one issue) and "attachmentsAfter": ${slotIds} — the section right after which those files are embedded in the Jira ticket. Follow the project rules about where screenshots / videos go; if they say nothing, use the actual-result section.`
+    : `Add "attachmentsAfter": ${slotIds} — the section right after which the attached files are embedded in the Jira ticket. Follow the project rules about where screenshots / videos go; if they say nothing, use the actual-result section.`}` : '';
+
   if (isGherkin) {
     const gherkinJson = composite
       ? '{"summary":"umbrella title","severity":"Critical|High|Medium|Low","environment":"...","issues":[{"title":"...","description":"sentences\\nScenario: name\\nGIVEN ...\\nWHEN ...\\nTHEN ...","actualResult":"- wrong\\n- wrong","expectedResult":"- correct\\n- correct","additionalInfo":""}],"customFields":{"Field name":"value or null"}}'
@@ -94,7 +114,7 @@ Schema:
 - "actualResult"   = bullet list of wrong behaviors, each line starting with "- ".
 - "expectedResult" = bullet list of correct behaviors, each line starting with "- ".
 - "additionalInfo" = optional extra info.
-- "customFields"   = best-effort extraction of the listed custom fields. Use null when not present.${composite ? '\n- In a composite report "description", "actualResult", "expectedResult" and "additionalInfo" live INSIDE each "issues" entry, not at the top level.' : ''}${compositeRule}
+- "customFields"   = best-effort extraction of the listed custom fields. Use null when not present.${composite ? '\n- In a composite report "description", "actualResult", "expectedResult" and "additionalInfo" live INSIDE each "issues" entry, not at the top level.' : ''}${compositeRule}${attachmentRule}
 
 Respond ONLY with valid JSON, no markdown fences:
 ${gherkinJson}`;
@@ -133,7 +153,7 @@ Output schema notes:
   * NEVER include section labels/prefixes such as "AR:", "ER:", "Expected:", "Step 1:" inside values. The app adds titles, prefixes, colors and heading styles automatically from the template schema — if a project rule above asks for such labels/prefixes/colors, treat it as ALREADY SATISFIED by the app and return the bare content. Including the prefix yourself renders it doubled ("AR: AR: …").
   * Keep content in the section that matches its description; do not duplicate the same information across sections.
   * Optional sections may be [] or "" when the user's description does not provide enough information.
-- "customFields" = best-effort extraction of the listed custom fields. Use null when not present.${compositeRule}
+- "customFields" = best-effort extraction of the listed custom fields. Use null when not present.${compositeRule}${attachmentRule}
 
 Respond ONLY with valid JSON, no markdown fences:
 ${JSON.stringify(exampleJson)}`;
@@ -144,8 +164,25 @@ ${JSON.stringify(exampleJson)}`;
 // Throws on non-2xx responses with a human-readable message.
 // `opts.maxTokens` raises the output budget — a Composite Bug carries a full
 // report per issue and would be truncated (→ invalid JSON) at the default.
+// `opts.images` = [{ label, dataUrl }] (attachments.js) — sent after the
+// text, each image preceded by its label so the model can cite "#2 at 0:14".
 async function callAi(systemPrompt, userText, opts) {
   const maxTokens = (opts && opts.maxTokens) || 1600;
+  const images = (opts && opts.images) || [];
+  const content = fmt => {
+    if (!images.length) return userText;
+    const parts = [{ type: 'text', text: userText }];
+    images.forEach(img => {
+      parts.push({ type: 'text', text: img.label });
+      if (fmt === 'openai') {
+        parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+      } else {
+        const m = /^data:([^;]+);base64,(.*)$/.exec(img.dataUrl) || [];
+        parts.push({ type: 'image', source: { type: 'base64', media_type: m[1] || 'image/jpeg', data: m[2] || '' } });
+      }
+    });
+    return parts;
+  };
   if (provider === 'openrouter') {
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -153,7 +190,7 @@ async function callAi(systemPrompt, userText, opts) {
       body: JSON.stringify({
         model: cfg.openRouterModel || 'openrouter/auto',
         max_tokens: maxTokens,
-        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: content('openai') }],
       }),
     });
     if (!res.ok) {
@@ -178,7 +215,7 @@ async function callAi(systemPrompt, userText, opts) {
       model: 'claude-sonnet-4-20250514',
       max_tokens: maxTokens,
       system: systemPrompt,
-      messages: [{ role: 'user', content: userText }],
+      messages: [{ role: 'user', content: content('anthropic') }],
     }),
   });
   if (!res.ok) {
@@ -190,50 +227,162 @@ async function callAi(systemPrompt, userText, opts) {
 }
 
 // ── OpenRouter speech-to-text ─────────────────────────────────────────────
-// Used by Setup → Dictation → "GPT-4o Transcribe". Browser Web Speech still
-// provides the instant live preview; this runs after Stop and replaces the
-// dictated chunk with a higher-accuracy transcription from the recorded
-// audio. GPT-4o Transcribe is natively multilingual, so a Ukrainian
-// dictation peppered with English terms ("Checkout page", "crash") comes
-// back with the English words spelled in English rather than the Cyrillic
-// transliteration a monolingual recognizer produces.
-async function transcribeWithGpt4o(audioBlob, languageHint) {
+// Used by Setup → Dictation → "GPT Transcribe" (cfg value 'gpt4o-transcribe'
+// is kept for compatibility with saved configs). Web Speech still drives the
+// recording lifecycle; this turns the recorded audio into the final text
+// after Pause / Stop.
+//
+// Request shape mirrors the Meet Listener app, which runs the same model on
+// OpenRouter: multipart /audio/transcriptions with
+//   • languages[] — "uk" AND "en" for Ukrainian dictation, so English UI terms
+//     stay English instead of being forced into Cyrillic by language=uk;
+//   • keywords[]  — Context words terms + auto-replacement targets, so the
+//     model spells them right in the first place;
+//   • prompt      — transcription models read it as the PRECEDING text, not
+//     as an instruction: glossary first, then either the tail of what was
+//     already dictated (continuity across Pause / Resume) or a style sample
+//     showing English UI terms written in Latin.
+// If the service rejects keywords/languages (400/422) we fall back to a plain
+// language + prompt request for the rest of the session, and finally to the
+// JSON body this app used before.
+const TRANSCRIBE_MODEL    = 'openai/gpt-transcribe';
+const TRANSCRIBE_URL      = 'https://openrouter.ai/api/v1/audio/transcriptions';
+const TRANSCRIBE_TAIL     = 350;   // chars of earlier dictation passed as context
+const TRANSCRIBE_PROMPT_MAX = 900;
+const TRANSCRIBE_STYLE = {
+  uk: 'Відкриваю page, натискаю button і бачу error message — назви з екрана пишу англійською, як на екрані.',
+  en: 'Open the page, click the button and see the error message.',
+};
+let transcribeNativeHints = true;
+
+function transcribeLanguages(recLang) {
+  return String(recLang || '').toLowerCase().startsWith('en') ? ['en'] : ['uk', 'en'];
+}
+
+// Correct spellings the model should know: glossary terms + the right-hand
+// side of every auto-replacement rule. Deduped, max 100 (service limit).
+function transcribeKeywords() {
+  const out = [], seen = new Set();
+  const add = t => {
+    t = String(t || '').trim();
+    if (t.length < 2 || seen.has(t.toLowerCase())) return;
+    seen.add(t.toLowerCase());
+    out.push(t);
+  };
+  (cfg.contextWords || []).forEach(w => add(w && w.term));
+  if (typeof parseAutoReplacements === 'function') parseAutoReplacements(cfg.autoReplacements).forEach(r => add(r.target));
+  return out.slice(0, 100);
+}
+
+function transcribePrompt(prevText, en) {
+  const keywords = transcribeKeywords();
+  const flat = String(prevText || '').replace(/\s+/g, ' ').trim();
+  let context = flat;
+  if (flat.length > TRANSCRIBE_TAIL) {
+    const cut = flat.slice(-TRANSCRIBE_TAIL);
+    context = cut.includes(' ') ? cut.slice(cut.indexOf(' ') + 1) : cut;
+  }
+  if (!context) context = en ? TRANSCRIBE_STYLE.en : TRANSCRIBE_STYLE.uk;
+  const hints = keywords.length ? (en ? 'Terms: ' : 'Терміни: ') + keywords.join(', ') + '.' : '';
+  const budget = TRANSCRIBE_PROMPT_MAX - context.length - 1;
+  return `${hints.slice(0, Math.max(0, budget))} ${context}`.trim();
+}
+
+// POST with retries on network errors and 408 / 429 / 5xx (1s, 3s, 6s
+// back-off). Other statuses fail immediately; the thrown Error carries
+// `.status` so callers can tell "bad request" from "service down".
+async function postTranscription(makeInit) {
+  const delays = [1000, 3000, 6000];
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    let res;
+    try {
+      res = await fetch(TRANSCRIBE_URL, makeInit());
+    } catch (e) {
+      lastErr = new Error('Network error: ' + e.message);
+    }
+    if (res) {
+      if (res.ok) {
+        const data = await res.json();
+        return String(data.text || data.transcription || data.output_text || '').trim();
+      }
+      const e = await res.json().catch(() => ({}));
+      lastErr = new Error(e.error?.message || e.message || `HTTP ${res.status}`);
+      lastErr.status = res.status;
+      if (![408, 429, 500, 502, 503, 504].includes(res.status)) throw lastErr;
+    }
+    if (attempt < delays.length) await new Promise(r => setTimeout(r, delays[attempt]));
+  }
+  throw lastErr;
+}
+
+// opts: { recLang: 'uk-UA' | 'en-US', prevText: text already dictated before
+// this chunk }. Resolves to the transcript, or '' when the recording holds
+// no speech (it is then not sent at all — models tend to invent a phrase on
+// silence).
+async function transcribeSpeech(audioBlob, opts) {
+  const o = opts || {};
   if (!apiKey) throw new Error('Missing OpenRouter API key');
   if (provider !== 'openrouter') throw new Error('Switch AI provider to OpenRouter in Setup');
   if (!audioBlob || !audioBlob.size) throw new Error('No audio was recorded');
-  const fmt = audioBlob.type.includes('webm') ? 'webm'
+
+  if (typeof audioHasSpeech === 'function' && !(await audioHasSpeech(audioBlob))) {
+    try { toast('🔇 No speech detected — nothing sent for transcription'); } catch {}
+    return '';
+  }
+
+  const langs  = transcribeLanguages(o.recLang);
+  const en     = langs.length === 1 && langs[0] === 'en';
+  const prompt = transcribePrompt(o.prevText, en);
+  const ext = audioBlob.type.includes('webm') ? 'webm'
     : audioBlob.type.includes('ogg') ? 'ogg'
       : audioBlob.type.includes('mp4') ? 'mp4'
         : audioBlob.type.includes('mpeg') || audioBlob.type.includes('mp3') ? 'mp3'
           : 'wav';
-  const buf = await audioBlob.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(buf);
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-  }
-  const body = {
-    model: 'openai/gpt-4o-transcribe',
-    input_audio: {
-      data: btoa(binary),
-      format: fmt,
-    },
-    temperature: 0,
+  const headers = { 'Authorization': 'Bearer ' + apiKey, 'X-Title': 'Bug Report Agent' };
+  const multipart = native => () => {
+    const form = new FormData();
+    form.append('file', audioBlob, 'dictation.' + ext);
+    form.append('model', TRANSCRIBE_MODEL);
+    form.append('response_format', 'json');
+    if (prompt) form.append('prompt', prompt);
+    if (native) {
+      langs.forEach(l => form.append('languages[]', l));
+      transcribeKeywords().forEach(k => form.append('keywords[]', k));
+    } else {
+      form.append('language', en ? 'en' : 'uk');
+    }
+    return { method: 'POST', headers, body: form };
   };
-  if (languageHint) body.language = languageHint;
+  const badRequest = e => [400, 415, 422].includes(e.status);
 
-  const res = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({}));
-    throw new Error(e.error?.message || e.message || `HTTP ${res.status}`);
+  if (transcribeNativeHints) {
+    try {
+      return await postTranscription(multipart(true));
+    } catch (e) {
+      if (!badRequest(e)) throw e;
+      console.warn('Transcription service rejected keywords/languages, using plain prompt:', e.message);
+      transcribeNativeHints = false;
+    }
   }
-  const data = await res.json();
-  return String(data.text || data.transcription || data.output_text || '').trim();
+  try {
+    return await postTranscription(multipart(false));
+  } catch (e) {
+    if (!badRequest(e)) throw e;
+    console.warn('Multipart transcription rejected, falling back to the JSON request:', e.message);
+  }
+
+  const buf = new Uint8Array(await audioBlob.arrayBuffer());
+  let binary = '';
+  for (let i = 0; i < buf.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  }
+  const body = JSON.stringify({
+    model: TRANSCRIBE_MODEL,
+    input_audio: { data: btoa(binary), format: ext },
+    language: en ? 'en' : 'uk',
+  });
+  return postTranscription(() => ({ method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body }));
 }
 
 // ── robust JSON extraction ────────────────────────────────────────────────
@@ -345,6 +494,8 @@ function normalizeCompositeResult(rawText, isGherkin) {
       // The app numbers issues itself — drop an "Issue #2." the model added anyway.
       const title = stripJiraMarkup(it.title || it.summary || '')
         .replace(/^\s*issue\s*#?\s*\d+\s*[.:\-–—]\s*/i, '').trim();
+      // Attachment placement hints — consumed by applyAttachmentsToReport.
+      const hints = { attachments: it.attachments, attachmentsAfter: it.attachmentsAfter };
       if (isGherkin) {
         return {
           title,
@@ -352,9 +503,10 @@ function normalizeCompositeResult(rawText, isGherkin) {
           actualResult:   stripJiraMarkup(it.actualResult   || ''),
           expectedResult: stripJiraMarkup(it.expectedResult || ''),
           additionalInfo: stripJiraMarkup(it.additionalInfo || ''),
+          ...hints,
         };
       }
-      const issue = { title, sections: (it.sections && typeof it.sections === 'object') ? it.sections : {} };
+      const issue = { title, sections: (it.sections && typeof it.sections === 'object') ? it.sections : {}, ...hints };
       ['preconditions', 'steps', 'actual', 'expected'].forEach(k => {
         if (it[k] !== undefined && issue.sections[k] === undefined) issue.sections[k] = it[k];
       });
@@ -377,7 +529,8 @@ function normalizeCompositeResult(rawText, isGherkin) {
 async function generate() {
   if (typeof compositeMode !== 'undefined' && compositeMode) return generateComposite();
   const ticket = document.getElementById('tin').value.trim();
-  if (!ticket) { showErr('Please add a description — type or dictate.'); return; }
+  const withFiles = typeof hasReportAttachments === 'function' && hasReportAttachments();
+  if (!ticket && !withFiles) { showErr('Please add a description — type, dictate, or attach a screenshot / recording.'); return; }
   if (!apiKey) { promptKey(); return; }
 
   const btn = document.getElementById('genBtn');
@@ -387,11 +540,18 @@ async function generate() {
   document.getElementById('resArea').innerHTML = '';
 
   const isGherkin = reportFormat === 'gherkin';
-  const sys = buildSystemPrompt({ isGherkin });
 
   try {
-    const raw = await callAi(sys, ticket);
+    // Attachments → labelled images (video → key frames) for the model.
+    const files = withFiles
+      ? await prepareAttachmentsForAi(msg => { btn.innerHTML = `<span class="spinner"></span> ${esc(msg)}`; })
+      : null;
+    if (files) btn.innerHTML = '<span class="spinner"></span> Analyzing…';
+    const sys = buildSystemPrompt({ isGherkin, attachments: files ? files.prompt : '' });
+    const text = ticket || '(No written description — build the report from the attachments.)';
+    const raw = await callAi(sys, text, files ? { images: files.images, maxTokens: 2400 } : undefined);
     lastRep = normalizeAiResult(raw, isGherkin);
+    if (files) applyAttachmentsToReport(lastRep, files, isGherkin);
     renderResult(lastRep);
     addToHistory(lastRep, reportFormat);
   } catch (e) {
@@ -417,7 +577,7 @@ function renderResult(r) {
 
 function renderResultNormal(r) {
   document.getElementById('resArea').innerHTML = `
-    <div class="result-card" data-result-id="report">
+    <div class="result-card" data-result-id="report" data-format="normal">
       <div class="res-top">
         <div style="display:flex;align-items:center;gap:10px">
           <span class="res-lbl">Bug report</span>
@@ -428,6 +588,7 @@ function renderResultNormal(r) {
         <span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)">${esc(cfg.projectKey || 'QA')} · ${esc(cfg.issueType || 'Bug')}</span>
       </div>
       <div class="res-body">${renderEditableNormalBody(r, 'report')}</div>
+      ${renderAttachmentsBlock(r, 'report', false)}
       ${renderLinkedItemsBlock(r, 'report')}
       <div class="res-actions">
         <button class="btn btn-ghost btn-sm" onclick="copyReport()">📋 Copy</button>
@@ -439,7 +600,7 @@ function renderResultNormal(r) {
 
 function renderResultGherkin(r) {
   document.getElementById('resArea').innerHTML = `
-    <div class="result-card" data-result-id="report">
+    <div class="result-card" data-result-id="report" data-format="gherkin">
       <div class="res-top">
         <div style="display:flex;align-items:center;gap:10px">
           <span class="res-lbl">Bug report</span>
@@ -451,6 +612,7 @@ function renderResultGherkin(r) {
         <span style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--dim)">${esc(cfg.projectKey || 'QA')} · ${esc(cfg.issueType || 'Bug')}</span>
       </div>
       <div class="res-body">${renderEditableGherkinBody(r, 'report')}</div>
+      ${renderAttachmentsBlock(r, 'report', true)}
       ${renderLinkedItemsBlock(r, 'report')}
       <div class="res-actions">
         <button class="btn btn-ghost btn-sm" onclick="copyReport()">📋 Copy</button>
