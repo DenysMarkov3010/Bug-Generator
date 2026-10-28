@@ -420,7 +420,7 @@ async function generateSession() {
   const isGherkin = sessionFormat === 'gherkin';
   const sys = buildSystemPrompt({ isGherkin });
 
-  const promises = filled.map(card => callAi(sys, card.text).then(
+  const promises = filled.map(card => callAi(sys, card.text, { purpose: 'batch' }).then(
     raw => ({ id: card.id, result: normalizeAiResult(raw, isGherkin) }),
     e   => ({ id: card.id, error: e.message })
   ));

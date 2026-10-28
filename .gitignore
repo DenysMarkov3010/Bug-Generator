@@ -14,6 +14,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# AI usage log written by serve.py / serve.ps1.
+logs/
+
 # Local exports / downloads.
 bra-*.json
 .env*

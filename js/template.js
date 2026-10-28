@@ -666,7 +666,7 @@ Respond ONLY with valid JSON, no markdown fences:
 Each rule must be a single imperative sentence (max 140 chars), starting with a verb like "Always", "Include", "Mention", "Capture", "Describe", "Format", "Order", "Use". Rules should cover both content semantics and visible formatting conventions from the template.`;
 
   try {
-    const txt = await callAi(sys, tpl, { maxTokens: 2300 });
+    const txt = await callAi(sys, tpl, { maxTokens: 2300, purpose: 'analyze-template' });
 
     const parsed = typeof parseAiJson === 'function'
       ? parseAiJson(txt)

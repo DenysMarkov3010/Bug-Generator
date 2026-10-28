@@ -166,9 +166,22 @@ ${JSON.stringify(exampleJson)}`;
 // report per issue and would be truncated (→ invalid JSON) at the default.
 // `opts.images` = [{ label, dataUrl }] (attachments.js) — sent after the
 // text, each image preceded by its label so the model can cite "#2 at 0:14".
+// `opts.onUsage(usage)` receives what the call consumed (provider, model,
+// tokens, cost); `opts.purpose` labels the call in the usage log.
 async function callAi(systemPrompt, userText, opts) {
   const maxTokens = (opts && opts.maxTokens) || 1600;
   const images = (opts && opts.images) || [];
+  const startedAt = Date.now();
+  const onUsage = usage => {
+    if (opts && opts.onUsage) opts.onUsage(usage);
+    logAiUsage({
+      ts: new Date(startedAt).toISOString(),
+      purpose: (opts && opts.purpose) || 'other',
+      ...usage,
+      durationMs: Date.now() - startedAt,
+      images: images.length,
+    });
+  };
   const content = fmt => {
     if (!images.length) return userText;
     const parts = [{ type: 'text', text: userText }];
@@ -191,6 +204,8 @@ async function callAi(systemPrompt, userText, opts) {
         model: cfg.openRouterModel || 'openrouter/auto',
         max_tokens: maxTokens,
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: content('openai') }],
+        // Ask OpenRouter to report the real charge for this call in usage.cost.
+        usage: { include: true },
       }),
     });
     if (!res.ok) {
@@ -198,6 +213,15 @@ async function callAi(systemPrompt, userText, opts) {
       throw new Error(e.error?.message || `HTTP ${res.status}`);
     }
     const data = await res.json();
+    const u = data.usage || {};
+    onUsage({
+      provider: 'openrouter',
+      model: data.model || cfg.openRouterModel || 'openrouter/auto',
+      inputTokens: u.prompt_tokens || 0,
+      outputTokens: u.completion_tokens || 0,
+      cost: typeof u.cost === 'number' ? u.cost : null,
+      estimated: false,
+    });
     return data.choices?.[0]?.message?.content || '';
   }
 
@@ -226,8 +250,97 @@ async function callAi(systemPrompt, userText, opts) {
     throw new Error(e.error?.message || `HTTP ${res.status}`);
   }
   const data = await res.json();
+  const u = data.usage || {};
+  const model = data.model || cfg.anthropicModel || DEFAULTS.anthropicModel;
+  onUsage({
+    provider: 'anthropic',
+    model,
+    inputTokens: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+    outputTokens: u.output_tokens || 0,
+    cost: anthropicCost(model, u),
+    estimated: true,
+  });
   if (data.stop_reason === 'refusal') throw new Error('The model declined this request — try rephrasing or another model');
   return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+}
+
+// ── usage & cost ──────────────────────────────────────────────────────────
+// Anthropic list prices, USD per 1M tokens [input, output]. Anthropic doesn't
+// return a price, so the cost of a direct call is estimated from these;
+// OpenRouter reports its actual charge. Unknown model → cost shown as n/a.
+const ANTHROPIC_PRICES = {
+  'claude-fable-5-1':  [10, 50],
+  'claude-fable-5':    [10, 50],
+  'claude-opus-5-5':   [4, 20],
+  'claude-opus-5':     [5, 25],
+  'claude-opus-4-8':   [5, 25],
+  'claude-opus-4-7':   [5, 25],
+  'claude-opus-4-6':   [5, 25],
+  'claude-sonnet-5-5': [2, 10],
+  'claude-sonnet-5':   [2, 10],
+  'claude-sonnet-4-6': [3, 15],
+  'claude-haiku-5-5':  [0.10, 0.50],
+  'claude-haiku-4-5':  [1, 5],
+};
+
+function anthropicCost(model, u) {
+  const id = String(model || '').replace(/-\d{8}$/, '');   // drop a dated-snapshot suffix
+  let price = ANTHROPIC_PRICES[id];
+  if (!price) return null;
+  const write = u.cache_creation_input_tokens || 0;
+  const read  = u.cache_read_input_tokens || 0;
+  // Haiku 5.5 bills prompts over 100K tokens at a higher rate.
+  if (id === 'claude-haiku-5-5' && (u.input_tokens || 0) + write + read > 100000) price = [0.50, 2.50];
+  const [inP, outP] = price;
+  return ((u.input_tokens || 0) * inP + write * inP * 1.25 + read * inP * 0.1 + (u.output_tokens || 0) * outP) / 1e6;
+}
+
+function fmtUsd(v) {
+  if (v === 0) return '$0';
+  return '$' + (v < 1 ? v.toFixed(4) : v.toFixed(2));
+}
+
+// One-line footer under the generated report: provider · model · tokens · cost.
+// `r.aiUsage` is set by generate() / generateComposite(); older History
+// entries have none and render nothing.
+function renderAiUsageLine(r) {
+  const u = r && r.aiUsage;
+  if (!u) return '';
+  const fmt = n => Number(n || 0).toLocaleString('en-US');
+  const name = u.provider === 'openrouter' ? 'OpenRouter' : 'Anthropic';
+  const cost = typeof u.cost === 'number'
+    ? `<span title="${u.estimated ? 'Estimated from Anthropic list prices' : 'Charged by OpenRouter'}">${u.estimated ? '≈ ' : ''}${fmtUsd(u.cost)}</span>`
+    : '<span title="No price known for this model">cost n/a</span>';
+  return `<div class="ai-usage">🤖 ${name} · ${esc(u.model)} · ${fmt(u.inputTokens)} in / ${fmt(u.outputTokens)} out tokens · ${cost}</div>`;
+}
+
+// ── usage log ─────────────────────────────────────────────────────────────
+// Every successful AI call is recorded — metadata only, never the prompt or
+// the report text:
+//   • logs/ai-usage.jsonl on disk, one JSON line per call, when the app is
+//     served by serve.py / serve.ps1 (POST /api/ai-log);
+//   • localStorage 'bra_ai_log' (last AI_LOG_MAX calls) however the app is
+//     opened — file://, Vercel — so nothing is lost without the local server.
+const AI_LOG_KEY = 'bra_ai_log';
+const AI_LOG_MAX = 2000;
+
+function logAiUsage(entry) {
+  try {
+    const log = JSON.parse(localStorage.getItem(AI_LOG_KEY) || '[]');
+    log.push(entry);
+    localStorage.setItem(AI_LOG_KEY, JSON.stringify(log.slice(-AI_LOG_MAX)));
+  } catch {}
+  // The local server answers /api/jira/ping — the same probe tells us it
+  // can also take the log line.
+  if (typeof localJiraProxyUrl !== 'function') return;
+  localJiraProxyUrl().then(url => {
+    if (!url) return;
+    return fetch(location.origin + '/api/ai-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    });
+  }).catch(() => {});
 }
 
 // ── OpenRouter speech-to-text ─────────────────────────────────────────────
@@ -555,8 +668,14 @@ async function generate() {
     if (files) btn.innerHTML = '<span class="spinner"></span> Analyzing…';
     const sys = buildSystemPrompt({ isGherkin, attachments: files ? files.prompt : '' });
     const text = ticket || '(No written description — build the report from the attachments.)';
-    const raw = await callAi(sys, text, files ? { images: files.images, maxTokens: 2400 } : undefined);
+    let usage = null;
+    const raw = await callAi(sys, text, {
+      ...(files ? { images: files.images, maxTokens: 2400 } : {}),
+      purpose: 'report',
+      onUsage: u => { usage = u; },
+    });
     lastRep = normalizeAiResult(raw, isGherkin);
+    lastRep.aiUsage = usage;
     if (files) applyAttachmentsToReport(lastRep, files, isGherkin);
     renderResult(lastRep);
     addToHistory(lastRep, reportFormat);
@@ -601,6 +720,7 @@ function renderResultNormal(r) {
         <button class="btn btn-ghost btn-sm" onclick="pushToJira()">🚀 Push to Jira</button>
         <button class="btn btn-ghost btn-sm" onclick="clearReportInput()">🗑 Clear</button>
       </div>
+      ${renderAiUsageLine(r)}
     </div>`;
 }
 
@@ -625,6 +745,7 @@ function renderResultGherkin(r) {
         <button class="btn btn-ghost btn-sm" onclick="pushToJira()">🚀 Push to Jira</button>
         <button class="btn btn-ghost btn-sm" onclick="clearReportInput()">🗑 Clear</button>
       </div>
+      ${renderAiUsageLine(r)}
     </div>`;
 }
 

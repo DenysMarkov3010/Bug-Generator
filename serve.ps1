@@ -134,6 +134,28 @@ function Test-JiraBase([string]$base) {
     return ($base -match '^https?://')
 }
 
+# ---- AI usage log (/api/ai-log) ---------------------------------------------
+# The app POSTs one record per AI call (provider, model, tokens, cost - never
+# report text); it is appended as one JSON line to logs\ai-usage.jsonl.
+$aiLogFields = 'ts', 'purpose', 'provider', 'model', 'inputTokens', 'outputTokens', 'cost', 'estimated', 'durationMs', 'images'
+
+function Invoke-AiLog($req, $res) {
+    if ($req.HttpMethod -ne 'POST') { Send-Json $res 405 '{"error":"POST only"}'; return }
+    $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
+    $src = $reader.ReadToEnd() | ConvertFrom-Json
+    # Known scalar fields only - the log never grows arbitrary payloads.
+    $entry = [ordered]@{}
+    foreach ($k in $aiLogFields) {
+        $v = $src.$k
+        if ($v -is [string] -or $v -is [ValueType]) { $entry[$k] = $v }
+    }
+    $dir = Join-Path $root 'logs'
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    $line = ($entry | ConvertTo-Json -Compress) + "`n"
+    [System.IO.File]::AppendAllText((Join-Path $dir 'ai-usage.jsonl'), $line, (New-Object System.Text.UTF8Encoding($false)))
+    Send-Json $res 200 '{"ok":true}'
+}
+
 function Invoke-LocalProxy($req, $res) {
     $route = $req.Url.AbsolutePath
     if ($req.HttpMethod -eq 'GET' -and $route -eq '/api/jira/ping') {
@@ -207,6 +229,11 @@ while ($listener.IsListening) {
     $res = $ctx.Response
 
     try {
+        if ($req.Url.AbsolutePath -eq '/api/ai-log') {
+            try { Invoke-AiLog $req $res }
+            catch { try { Send-Json $res 500 '{"error":"AI log write failed"}' } catch {} }
+            continue
+        }
         if ($req.Url.AbsolutePath.StartsWith('/api/jira')) {
             try { Invoke-LocalProxy $req $res }
             catch {

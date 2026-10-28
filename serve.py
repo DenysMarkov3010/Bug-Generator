@@ -26,6 +26,9 @@
 # recordings. When the app is opened from this server it detects the local
 # proxy (GET /api/jira/ping) and uploads attachments through it, with no
 # size limit. Only loopback clients are served.
+#
+# POST /api/ai-log appends one AI-call record (provider, model, tokens,
+# cost - never report text) as a JSON line to logs/ai-usage.jsonl.
 # =========================================================================
 import base64
 import http.server
@@ -35,6 +38,7 @@ import re
 import socket
 import socketserver
 import sys
+import threading
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -52,6 +56,11 @@ UPLOAD_PATH = re.compile(r"^/rest/api/3/issue/[A-Za-z0-9_-]+/attachments$")
 # that uuid is what an ADF "media" node needs to show the file inline.
 MEDIA_ID = re.compile(r"/file/([0-9a-fA-F-]{36})/")
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+AI_LOG = os.path.join(ROOT, "logs", "ai-usage.jsonl")
+AI_LOG_FIELDS = ("ts", "purpose", "provider", "model", "inputTokens", "outputTokens",
+                 "cost", "estimated", "durationMs", "images")
+AI_LOG_LOCK = threading.Lock()   # ThreadingTCPServer - keep lines whole
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -88,13 +97,15 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?")[0]
-        if route not in ("/api/jira", "/api/jira/upload"):
+        if route not in ("/api/jira", "/api/jira/upload", "/api/ai-log"):
             return self._json(404, {"error": "Not found"})
         if self.client_address[0] not in LOOPBACK:
             return self._json(403, {"error": "Local proxy serves this computer only"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
+            if route == "/api/ai-log":
+                return self._ai_log(json.loads(raw or b"{}"))
             if route == "/api/jira/upload":
                 return self._upload(raw)
             return self._envelope(json.loads(raw or b"{}"))
@@ -141,6 +152,14 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
             "X-Atlassian-Token": "no-check",
         })
         return self._relay(status, resp)
+
+    def _ai_log(self, src):
+        # Known scalar fields only - the log never grows arbitrary payloads.
+        entry = {k: src[k] for k in AI_LOG_FIELDS if isinstance(src.get(k), (str, int, float, bool))}
+        os.makedirs(os.path.dirname(AI_LOG), exist_ok=True)
+        with AI_LOG_LOCK, open(AI_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return self._json(200, {"ok": True})
 
     def _relay(self, status, body):
         try:

@@ -187,11 +187,15 @@ async function generateComposite() {
     const sys = buildSystemPrompt({ isGherkin, composite: true, attachments: files ? files.prompt : '' });
     // Every issue is a full report body — scale the output budget so the
     // JSON isn't cut off mid-way.
+    let usage = null;
     const raw = await callAi(sys, userText, {
       maxTokens: Math.min(8000, 1600 * Math.max(2, filled.length)),
       images: files ? files.images : [],
+      purpose: 'composite',
+      onUsage: u => { usage = u; },
     });
     lastRep = normalizeCompositeResult(raw, isGherkin);
+    lastRep.aiUsage = usage;
     if (files) applyAttachmentsToReport(lastRep, files, isGherkin);
     renderResult(lastRep);
     addToHistory(lastRep, reportFormat);
