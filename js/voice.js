@@ -102,7 +102,6 @@ let cleanupSeq = 0;
 // isRec guards (which protect the current target) and the status line.
 async function maybeTranscribeGpt4o(audioBlob, detached) {
   if (!audioBlob || !audioBlob.size) return;
-  if (!apiKey) return;
   if (typeof transcribeSpeech !== 'function') return;
   const targetId = detached ? detached.targetId : dictTargetId;
   if (!document.getElementById(targetId)) return;

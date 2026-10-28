@@ -81,6 +81,10 @@ function migrateCfg() {
     cfg.openRouterModel = DEFAULTS.openRouterModel;
     changed = true;
   }
+  if (typeof cfg.anthropicModel !== 'string' || !cfg.anthropicModel.trim()) {
+    cfg.anthropicModel = DEFAULTS.anthropicModel;
+    changed = true;
+  }
   // Retired AI dictation modes (legacy true/'stop', 'whisper-turbo', and the
   // removed 'live' polish) collapse to 'gpt4o-transcribe' — users who had ANY
   // AI mode on keep an AI mode. Unrecognized values fall back to the default.

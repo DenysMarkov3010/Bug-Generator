@@ -47,37 +47,61 @@ function showReportSubTab(name) {
 }
 
 // ── provider ──────────────────────────────────────────────────────────────
+// Keys and models are configured in Setup → AI provider; the sidebar is only
+// a quick switch between providers that already have a key (a provider with
+// no key has its button disabled).
+const PROVIDER_NAMES = { anthropic: 'Anthropic', openrouter: 'OpenRouter' };
+
 function setProvider(p, save = true) {
-  provider = p;
-  if (save) localStorage.setItem('bra_provider', p);
-  document.getElementById('pAnthropic').classList.toggle('active',  p === 'anthropic');
-  document.getElementById('pOpenRouter').classList.toggle('active', p === 'openrouter');
+  provider = p === 'openrouter' ? 'openrouter' : 'anthropic';
+  apiKey   = apiKeys[provider] || '';
+  if (save) localStorage.setItem('bra_provider', provider);
   updateApiBtn();
+  if (typeof renderAiProviderSetup === 'function') renderAiProviderSetup();
 }
 
 // ── api key ───────────────────────────────────────────────────────────────
+// Called wherever an AI action needs a key that isn't set: jump to the
+// Setup card and focus the active provider's key field.
 function promptKey() {
-  const label = provider === 'openrouter'
-    ? 'OpenRouter API key (openrouter.ai/keys):'
-    : 'Anthropic API key (console.anthropic.com):';
-  const k = prompt(label, apiKey);
-  if (k !== null) {
-    apiKey = k.trim();
-    localStorage.setItem('bra_key', apiKey);
-    updateApiBtn();
-  }
+  showPage('setup');
+  const card = document.getElementById('aiProviderCard');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const input = document.getElementById(provider === 'openrouter' ? 'aiKeyOpenRouter' : 'aiKeyAnthropic');
+  if (input) setTimeout(() => input.focus(), 300);
+  toast(`⚠ Add your ${PROVIDER_NAMES[provider]} API key in Setup → AI provider`);
+}
+
+function activeModelLabel() {
+  return provider === 'openrouter'
+    ? (cfg.openRouterModel || 'openrouter/auto')
+    : (cfg.anthropicModel || DEFAULTS.anthropicModel);
 }
 
 function updateApiBtn() {
-  const btn  = document.getElementById('apiBtn');
-  const name = provider === 'openrouter' ? 'OpenRouter key' : 'Anthropic key';
+  ['anthropic', 'openrouter'].forEach(p => {
+    const b = document.getElementById(p === 'openrouter' ? 'pOpenRouter' : 'pAnthropic');
+    if (!b) return;
+    b.disabled = !apiKeys[p];
+    b.title = apiKeys[p] ? '' : `No ${PROVIDER_NAMES[p]} key — add it in Setup → AI provider`;
+    b.classList.toggle('active', p === provider && !!apiKeys[p]);
+  });
+  const btn = document.getElementById('apiBtn');
   if (apiKey) {
     document.getElementById('apiIcon').textContent = '●';
-    document.getElementById('apiLbl').textContent  = name + ' set';
+    document.getElementById('apiLbl').textContent  = activeModelLabel();
+    btn.title = `${PROVIDER_NAMES[provider]} · ${activeModelLabel()} — open Setup → AI provider`;
     btn.classList.add('set');
   } else {
     document.getElementById('apiIcon').textContent = '○';
-    document.getElementById('apiLbl').textContent  = 'Set ' + name;
+    document.getElementById('apiLbl').textContent  = 'Set up AI provider';
+    btn.title = 'Open Setup → AI provider';
     btn.classList.remove('set');
   }
+}
+
+function openAiProviderSetup() {
+  showPage('setup');
+  const card = document.getElementById('aiProviderCard');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }

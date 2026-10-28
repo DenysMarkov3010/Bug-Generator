@@ -10,7 +10,7 @@
        fallback stack instead of hanging on a white screen. -->
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap"
         rel="stylesheet" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="css/styles.css?v=attachments2" />
+  <link rel="stylesheet" href="css/styles.css?v=providers" />
 </head>
 <body>
 <div class="app">
@@ -30,11 +30,11 @@
     <div class="sidebar-bottom">
       <div style="font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px">Provider</div>
       <div style="display:flex;gap:4px;margin-bottom:8px">
-        <button class="lang-btn active" id="pAnthropic" onclick="setProvider('anthropic')" style="flex:1;border-radius:var(--r-sm)">Anthropic</button>
-        <button class="lang-btn"        id="pOpenRouter" onclick="setProvider('openrouter')" style="flex:1;border-radius:var(--r-sm)">OpenRouter</button>
+        <button class="lang-btn" id="pAnthropic"  onclick="setProvider('anthropic')"  style="flex:1;border-radius:var(--r-sm)" disabled>Anthropic</button>
+        <button class="lang-btn" id="pOpenRouter" onclick="setProvider('openrouter')" style="flex:1;border-radius:var(--r-sm)" disabled>OpenRouter</button>
       </div>
-      <button class="api-btn" id="apiBtn" onclick="promptKey()">
-        <span id="apiIcon">○</span><span id="apiLbl">Set API key</span>
+      <button class="api-btn" id="apiBtn" onclick="openAiProviderSetup()">
+        <span id="apiIcon">○</span><span id="apiLbl">Set up AI provider</span>
       </button>
     </div>
   </aside>
@@ -217,6 +217,41 @@
         </div>
       </div>
 
+      <div class="card" id="aiProviderCard">
+        <div class="card-head">
+          <span class="card-title">AI provider</span>
+          <span style="font-size:11px;color:var(--dim);font-family:'IBM Plex Mono',monospace">keys stored locally, not exported · saved instantly</span>
+        </div>
+        <div class="card-body">
+          <div class="lang-toggle" style="background:var(--surface2);display:inline-flex;margin-bottom:12px">
+            <button class="lang-btn" id="aiSetAnthropic"  onclick="setProvider('anthropic')">Anthropic</button>
+            <button class="lang-btn" id="aiSetOpenRouter" onclick="setProvider('openrouter')">OpenRouter</button>
+          </div>
+          <div id="aiAnthropicFields">
+            <div class="g2">
+              <div class="field"><label class="lbl">Anthropic API key <span style="color:var(--dim)">(console.anthropic.com)</span></label>
+                <input type="password" id="aiKeyAnthropic" placeholder="sk-ant-…" autocomplete="off" oninput="setProviderKey('anthropic', this.value)" onchange="loadAnthropicModels(true)"/></div>
+              <div class="field"><label class="lbl">Model <span id="aiModelsSrc" style="color:var(--dim)"></span></label>
+                <div style="display:flex;gap:6px">
+                  <select id="aiModelAnthropic" onchange="setAnthropicModel(this.value)" style="flex:1"></select>
+                  <button class="btn btn-ghost btn-sm" id="aiModelsRefresh" onclick="loadAnthropicModels()" title="Load the models available to this key">↻</button>
+                </div></div>
+            </div>
+          </div>
+          <div id="aiOpenRouterFields" style="display:none">
+            <div class="g2">
+              <div class="field"><label class="lbl">OpenRouter API key <span style="color:var(--dim)">(openrouter.ai/keys)</span></label>
+                <input type="password" id="aiKeyOpenRouter" placeholder="sk-or-…" autocomplete="off" oninput="setProviderKey('openrouter', this.value)"/></div>
+              <div class="field"><label class="lbl">Model ID <span style="color:var(--dim)">(openrouter.ai/models)</span></label>
+                <input type="text" id="aiModelOpenRouter" placeholder="anthropic/claude-sonnet-4.5" autocomplete="off" oninput="setOpenRouterModel(this.value)"/></div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6">
+            The selected provider is used for report generation and Analyze Template. Both keys are kept — switch between configured providers from the sidebar. An OpenRouter key also powers 🤖 GPT Transcribe, even while Anthropic is active.
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <span class="card-title">Dictation</span>
@@ -229,7 +264,7 @@
           </div>
           <div style="margin-top:10px;font-size:12px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.6">
             <strong style="color:var(--muted)">Web Speech only</strong> — instant live transcript from the browser recognizer (Context-words glossary still auto-corrects terms as you speak).<br>
-            <strong style="color:var(--muted)">🤖 GPT Transcribe</strong> — records clean audio while you dictate (Siri-style equalizer instead of a live draft); the accurate transcript appears after Pause / Stop. Ukrainian dictation is sent as Ukrainian + English, so English UI terms stay in Latin; Context words and Auto-replacements go along as spelling hints. Silent recordings aren't sent. Needs OpenRouter selected with an OpenRouter API key; if a call fails after retries, the audio is kept — tap ↻ Retry.
+            <strong style="color:var(--muted)">🤖 GPT Transcribe</strong> — records clean audio while you dictate (Siri-style equalizer instead of a live draft); the accurate transcript appears after Pause / Stop. Ukrainian dictation is sent as Ukrainian + English, so English UI terms stay in Latin; Context words and Auto-replacements go along as spelling hints. Silent recordings aren't sent. Needs an OpenRouter API key in AI provider above (works with either provider active) — without one this option is disabled; if a call fails after retries, the audio is kept — tap ↻ Retry.
           </div>
         </div>
       </div>
@@ -500,20 +535,20 @@
 
 <!-- Scripts are loaded in dependency order. Each file adds functions to the
      global scope, so existing onclick="..." handlers keep working. -->
-<script src="js/state.js?v=transcribe-v2"></script>
+<script src="js/state.js?v=providers"></script>
 <script src="js/utils.js?v=label-strip"></script>
-<script src="js/ui.js"></script>
-<script src="js/config.js?v=transcribe-v2"></script>
-<script src="js/voice.js?v=transcribe-v2"></script>
-<script src="js/template.js?v=composite"></script>
+<script src="js/ui.js?v=providers"></script>
+<script src="js/config.js?v=providers"></script>
+<script src="js/voice.js?v=providers"></script>
+<script src="js/template.js?v=providers"></script>
 <script src="js/editable.js?v=composite"></script>
-<script src="js/ai.js?v=attachments2"></script>
+<script src="js/ai.js?v=providers"></script>
 <script src="js/jira.js?v=attachments2"></script>
 <script src="js/history.js?v=attachments2"></script>
 <script src="js/composite.js?v=attachments2"></script>
 <script src="js/attachments.js?v=attachments2"></script>
-<script src="js/session.js?v=transcribe-v2"></script>
+<script src="js/session.js?v=providers"></script>
 <script src="js/context.js?v=transcribe-v2"></script>
-<script src="js/app.js?v=attachments2"></script>
+<script src="js/app.js?v=providers"></script>
 </body>
 </html>

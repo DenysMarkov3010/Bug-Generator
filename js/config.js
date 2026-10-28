@@ -13,6 +13,7 @@ function renderSetup() {
   renderFields();
   renderDefaultEnvStatus();
   renderVoiceCleanupToggle();
+  renderAiProviderSetup();
   renderLinkedWorkItems();
   refreshRestoreRulesUI();
   refreshRestoreFieldsUI();
@@ -98,6 +99,110 @@ function removeLinkedWorkItem(i) {
   renderLinkedWorkItems();
 }
 
+// ── AI provider (Anthropic / OpenRouter) ──────────────────────────────────
+// Keys live in their own localStorage slots (bra_key_<provider>) — never in
+// cfg, so Export JSON can't leak them. Models live in cfg and are exported.
+// Everything saves on input, like the Dictation toggle.
+
+// Fallback list for the Anthropic dropdown until /v1/models has been loaded
+// with the user's key (the live list then replaces it and is cached).
+const ANTHROPIC_MODELS = [
+  { id: 'claude-opus-5-5',   name: 'Claude Opus 5.5' },
+  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+  { id: 'claude-haiku-5-5',  name: 'Claude Haiku 5.5' },
+  { id: 'claude-fable-5-1',  name: 'Claude Fable 5.1' },
+  { id: 'claude-opus-5',     name: 'Claude Opus 5' },
+  { id: 'claude-sonnet-5',   name: 'Claude Sonnet 5' },
+  { id: 'claude-haiku-4-5',  name: 'Claude Haiku 4.5' },
+];
+
+function cachedAnthropicModels() {
+  try {
+    const list = JSON.parse(localStorage.getItem('bra_anthropic_models') || 'null');
+    return Array.isArray(list) && list.length ? list : null;
+  } catch { return null; }
+}
+
+function renderAiProviderSetup() {
+  const isOr = provider === 'openrouter';
+  const segA = document.getElementById('aiSetAnthropic');
+  const segO = document.getElementById('aiSetOpenRouter');
+  if (!segA || !segO) return;
+  segA.classList.toggle('active', !isOr);
+  segO.classList.toggle('active', isOr);
+  document.getElementById('aiAnthropicFields').style.display  = isOr ? 'none' : '';
+  document.getElementById('aiOpenRouterFields').style.display = isOr ? '' : 'none';
+
+  // Don't overwrite a field the user is typing in.
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = v; };
+  setVal('aiKeyAnthropic',    apiKeys.anthropic);
+  setVal('aiKeyOpenRouter',   apiKeys.openrouter);
+  setVal('aiModelOpenRouter', cfg.openRouterModel || '');
+
+  const live = cachedAnthropicModels();
+  const models = (live || ANTHROPIC_MODELS).slice();
+  const current = cfg.anthropicModel || DEFAULTS.anthropicModel;
+  if (!models.some(m => m.id === current)) models.unshift({ id: current, name: current });
+  document.getElementById('aiModelAnthropic').innerHTML = models
+    .map(m => `<option value="${esc(m.id)}"${m.id === current ? ' selected' : ''}>${esc(m.name && m.name !== m.id ? `${m.name} — ${m.id}` : m.id)}</option>`)
+    .join('');
+  document.getElementById('aiModelsSrc').textContent = live ? '(available to your key)' : '(default list — ↻ to load yours)';
+}
+
+function setProviderKey(p, value) {
+  const key = String(value || '').trim();
+  apiKeys[p] = key;
+  if (key) localStorage.setItem('bra_key_' + p, key);
+  else     localStorage.removeItem('bra_key_' + p);
+  if (p === 'anthropic') localStorage.removeItem('bra_anthropic_models');
+  if (p === provider) apiKey = key;
+  updateApiBtn();
+  if (p === 'openrouter') renderVoiceCleanupToggle();
+}
+
+function setAnthropicModel(id) {
+  cfg.anthropicModel = id || DEFAULTS.anthropicModel;
+  localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+  updateApiBtn();
+}
+
+function setOpenRouterModel(id) {
+  cfg.openRouterModel = String(id || '').trim();
+  localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+  updateApiBtn();
+}
+
+// GET /v1/models with the user's key → the models this key can call.
+// `quiet` = triggered by editing the key: an empty key is skipped silently.
+async function loadAnthropicModels(quiet) {
+  if (!apiKeys.anthropic) { if (!quiet) toast('⚠ Enter an Anthropic API key first'); return; }
+  const btn = document.getElementById('aiModelsRefresh');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=1000', {
+      headers: {
+        'x-api-key': apiKeys.anthropic,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error?.message || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const list = (data.data || []).map(m => ({ id: m.id, name: m.display_name || m.id }));
+    if (!list.length) throw new Error('no models returned');
+    localStorage.setItem('bra_anthropic_models', JSON.stringify(list));
+    renderAiProviderSetup();
+    toast(`✓ Loaded ${list.length} Anthropic model${list.length === 1 ? '' : 's'}`);
+  } catch (e) {
+    toast('⚠ Could not load Anthropic models: ' + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ── Dictation: Web Speech only / GPT Transcribe ────────────────────────────
 // Persisted immediately (like the Context-words threshold) — flipping the
 // engine shouldn't require remembering to hit 💾 Save at the bottom.
@@ -110,15 +215,31 @@ function voiceCleanupMode() {
   return cfg.voiceAiCleanup === 'gpt4o-transcribe' ? 'gpt4o-transcribe' : 'off';
 }
 
+// GPT Transcribe needs an OpenRouter key: without one the option is disabled
+// and a saved GPT mode falls back to Web Speech only (it stays there when a
+// key is added later — the user re-selects GPT Transcribe themselves).
 function renderVoiceCleanupToggle() {
+  const hasKey = !!apiKeys.openrouter;
+  if (!hasKey && cfg.voiceAiCleanup === 'gpt4o-transcribe') {
+    cfg.voiceAiCleanup = false;
+    localStorage.setItem('bra_cfg', JSON.stringify(cfg));
+  }
   const mode = voiceCleanupMode();
   const off  = document.getElementById('vcOff');
   const g4o  = document.getElementById('vcGpt4oTranscribe');
   if (off)  off.classList.toggle('active',  mode === 'off');
-  if (g4o)  g4o.classList.toggle('active',  mode === 'gpt4o-transcribe');
+  if (g4o) {
+    g4o.classList.toggle('active',  mode === 'gpt4o-transcribe');
+    g4o.disabled = !hasKey;
+    g4o.title = hasKey ? '' : 'Needs an OpenRouter API key — add it in Setup → AI provider';
+  }
 }
 
 function setVoiceCleanup(mode) {
+  if (mode === 'gpt4o-transcribe' && !apiKeys.openrouter) {
+    toast('⚠ GPT Transcribe needs an OpenRouter API key — add it in Setup → AI provider');
+    return;
+  }
   cfg.voiceAiCleanup = (mode === 'gpt4o-transcribe') ? 'gpt4o-transcribe' : false;
   localStorage.setItem('bra_cfg', JSON.stringify(cfg));
   renderVoiceCleanupToggle();

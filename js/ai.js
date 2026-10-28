@@ -212,8 +212,11 @@ async function callAi(systemPrompt, userText, opts) {
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: maxTokens,
+      model: cfg.anthropicModel || DEFAULTS.anthropicModel,
+      // Current Claude models think before answering and thinking tokens
+      // count against max_tokens — a tight cap would cut the JSON off.
+      // It's only a ceiling: billing follows what is actually generated.
+      max_tokens: Math.max(maxTokens, 16000),
       system: systemPrompt,
       messages: [{ role: 'user', content: content('anthropic') }],
     }),
@@ -223,7 +226,8 @@ async function callAi(systemPrompt, userText, opts) {
     throw new Error(e.error?.message || `HTTP ${res.status}`);
   }
   const data = await res.json();
-  return data.content.map(i => i.text || '').join('');
+  if (data.stop_reason === 'refusal') throw new Error('The model declined this request — try rephrasing or another model');
+  return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
 // ── OpenRouter speech-to-text ─────────────────────────────────────────────
@@ -322,8 +326,10 @@ async function postTranscription(makeInit) {
 // silence).
 async function transcribeSpeech(audioBlob, opts) {
   const o = opts || {};
-  if (!apiKey) throw new Error('Missing OpenRouter API key');
-  if (provider !== 'openrouter') throw new Error('Switch AI provider to OpenRouter in Setup');
+  // Always the OpenRouter key — transcription works whichever provider
+  // generates the reports.
+  const key = apiKeys.openrouter;
+  if (!key) throw new Error('Missing OpenRouter API key — add it in Setup → AI provider');
   if (!audioBlob || !audioBlob.size) throw new Error('No audio was recorded');
 
   if (typeof audioHasSpeech === 'function' && !(await audioHasSpeech(audioBlob))) {
@@ -339,7 +345,7 @@ async function transcribeSpeech(audioBlob, opts) {
       : audioBlob.type.includes('mp4') ? 'mp4'
         : audioBlob.type.includes('mpeg') || audioBlob.type.includes('mp3') ? 'mp3'
           : 'wav';
-  const headers = { 'Authorization': 'Bearer ' + apiKey, 'X-Title': 'Bug Report Agent' };
+  const headers = { 'Authorization': 'Bearer ' + key, 'X-Title': 'Bug Report Agent' };
   const multipart = native => () => {
     const form = new FormData();
     form.append('file', audioBlob, 'dictation.' + ext);

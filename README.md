@@ -57,9 +57,14 @@ machine you used — they are *never* committed to git. So on a new device:
      Running from `localhost` lets the browser **remember mic permission**
      (opening `index.html` via `file://` re-prompts for the mic on every reload).
    - Or just open `index.html` directly in **Chrome / Edge**.
-2. **Set your LLM API key** (sidebar button at the bottom). Pick a provider:
-   - **Anthropic** — create a key at https://console.anthropic.com/settings/keys
-   - **OpenRouter** — create a key at https://openrouter.ai/keys (one key, many models)
+2. **Set your LLM API key** in **⚙️ Setup → AI provider**. Pick a provider:
+   - **Anthropic** — key from https://console.anthropic.com/settings/keys, then pick
+     a model from the dropdown (↻ loads the models available to your key)
+   - **OpenRouter** — key from https://openrouter.ai/keys plus a model ID
+     (e.g. `anthropic/claude-sonnet-4.5`, see https://openrouter.ai/models)
+
+   Both keys can be saved; the **Provider** buttons at the bottom of the sidebar
+   switch between the configured ones (a provider without a key is disabled).
 3. Click **⚙️ Setup** → fill in project name, Jira URL, email, Jira API token → **Save**
 4. (Optional) Add custom Jira fields, or use **📋 Template → 🔍 Analyze Template**
    to auto-extract AI rules, the Normal report format schema, fields and
@@ -82,8 +87,8 @@ glossary (see below).
 ### GPT Transcribe mode (Setup → Dictation)
 
 Records the audio instead of showing a live draft and turns it into text on
-Pause / Stop with OpenRouter's **`openai/gpt-transcribe`** (needs the
-OpenRouter provider + key). The request mirrors the Meet Listener app:
+Pause / Stop with OpenRouter's **`openai/gpt-transcribe`** (needs an
+OpenRouter key in Setup → AI provider; works even while Anthropic is active). The request mirrors the Meet Listener app:
 
 - **Two languages** — Ukrainian dictation is sent as `uk` + `en`, so English
   UI terms stay in Latin ("Checkout page", not «чекаут пейдж»). EN = `en` only.
@@ -550,8 +555,9 @@ bug-report-agent/
 |-------------------------------------------|---------------------------------------------------|
 | Default AI rules / custom fields          | `js/state.js` → `DEFAULTS`                        |
 | Default context-match threshold           | `js/state.js` → `DEFAULTS.contextThreshold`       |
-| Anthropic model or request shape          | `js/ai.js` → `callAi()`                           |
-| OpenRouter model                          | `js/ai.js` → `callAi()` → `model:` field          |
+| Anthropic request shape                   | `js/ai.js` → `callAi()`                           |
+| Anthropic model list / default            | `js/config.js` → `ANTHROPIC_MODELS`, `js/state.js` → `DEFAULTS.anthropicModel` |
+| Default OpenRouter model                  | `js/state.js` → `DEFAULTS.openRouterModel`        |
 | AI system prompt (Normal + Gherkin)       | `js/ai.js` → `buildSystemPrompt()`                |
 | JSON parsing / cleanup heuristics         | `js/ai.js` → `parseAiJson()`                      |
 | Jira request body / field mapping         | `js/jira.js` → `pushToJira()`                     |

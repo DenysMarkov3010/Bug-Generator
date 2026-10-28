@@ -94,6 +94,8 @@ textarea::placeholder,input::placeholder{color:var(--dim)}
 .lang-toggle{display:flex;gap:3px;background:var(--surface3);border-radius:999px;padding:3px;flex-shrink:0}
 .lang-btn{background:none;border:none;border-radius:999px;padding:4px 12px;font-size:12px;font-family:'IBM Plex Mono',monospace;color:var(--muted);cursor:pointer;transition:all .15s}
 .lang-btn.active{background:var(--accent);color:var(--accent-ink);font-weight:500}
+.lang-btn:disabled{opacity:.35;cursor:not-allowed}
+#apiLbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .spinner{width:14px;height:14px;border:2px solid rgba(0,0,0,.15);border-top-color:var(--accent-ink);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 .spinner-green{border-color:rgba(212,255,71,.2);border-top-color:var(--accent)}
 @keyframes spin{to{transform:rotate(360deg)}}

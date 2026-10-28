@@ -5,6 +5,9 @@ const DEFAULTS = {
   projectName: '', projectKey: 'QA', issueType: 'Bug',
   jiraUrl: '', jiraEmail: '', jiraToken: '', proxyUrl: '',
   openRouterModel: 'anthropic/claude-sonnet-4.5',
+  // Model for direct Anthropic calls — picked from the Setup → AI provider
+  // dropdown (live /v1/models list when a key is set, ANTHROPIC_MODELS otherwise).
+  anthropicModel: 'claude-opus-5-5',
   template: '', templateLink: '',
   // Verbatim Environment block reused for every report. Auto-filled by
   // Analyze Template / fetchTemplateFromLink, manually editable in Setup.
@@ -164,8 +167,26 @@ function linkRelationOptionsHtml(selected) {
 // Globals shared across all modules. They live in the script lexical scope
 // and are accessible from every other <script> on the page.
 let cfg        = JSON.parse(localStorage.getItem('bra_cfg') || 'null') || JSON.parse(JSON.stringify(DEFAULTS));
-let apiKey     = localStorage.getItem('bra_key') || '';
-let provider   = localStorage.getItem('bra_provider') || 'anthropic';
+let provider   = localStorage.getItem('bra_provider') === 'openrouter' ? 'openrouter' : 'anthropic';
+// One key per provider (stored locally, never exported) so the sidebar can
+// switch between them without re-entering keys. `apiKey` always mirrors the
+// ACTIVE provider's key — setProvider keeps it in sync.
+const apiKeys  = {
+  anthropic:  localStorage.getItem('bra_key_anthropic')  || '',
+  openrouter: localStorage.getItem('bra_key_openrouter') || '',
+};
+// Older builds kept a single shared key in `bra_key` — adopt it for the
+// provider that was active at the time, then drop the legacy slot.
+(function migrateLegacyKey() {
+  const legacy = localStorage.getItem('bra_key');
+  if (legacy === null) return;
+  if (legacy && !apiKeys[provider]) {
+    apiKeys[provider] = legacy;
+    localStorage.setItem('bra_key_' + provider, legacy);
+  }
+  localStorage.removeItem('bra_key');
+})();
+let apiKey     = apiKeys[provider];
 let recog      = null;
 let isRec      = false;
 let lang       = 'uk-UA';

@@ -666,40 +666,7 @@ Respond ONLY with valid JSON, no markdown fences:
 Each rule must be a single imperative sentence (max 140 chars), starting with a verb like "Always", "Include", "Mention", "Capture", "Describe", "Format", "Order", "Use". Rules should cover both content semantics and visible formatting conventions from the template.`;
 
   try {
-    let txt = '';
-    if (provider === 'openrouter') {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-        body: JSON.stringify({
-          model: cfg.openRouterModel || 'openrouter/auto',
-          max_tokens: 2300,
-          messages: [{ role: 'system', content: sys }, { role: 'user', content: tpl }],
-        }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `HTTP ${res.status}`); }
-      const data = await res.json();
-      txt = data.choices?.[0]?.message?.content || '';
-    } else {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 2300,
-          system: sys,
-          messages: [{ role: 'user', content: tpl }],
-        }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `HTTP ${res.status}`); }
-      const data = await res.json();
-      txt = data.content.map(i => i.text || '').join('');
-    }
+    const txt = await callAi(sys, tpl, { maxTokens: 2300 });
 
     const parsed = typeof parseAiJson === 'function'
       ? parseAiJson(txt)

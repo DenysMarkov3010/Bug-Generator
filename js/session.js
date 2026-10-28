@@ -314,7 +314,7 @@ function stopCardRec(card) {
 
 async function maybeTranscribeCardWithGpt4o(card, baseTxt, audioBlob) {
   if (!audioBlob || !audioBlob.size) return;
-  if (!apiKey || typeof transcribeSpeech !== 'function') return;
+  if (typeof transcribeSpeech !== 'function') return;
 
   // Mark the card as in-flight and repaint statuses everywhere — the Batch
   // page shows "⏳ transcribing…" and the PiP accordion shows a blue
